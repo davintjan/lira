@@ -1,0 +1,57 @@
+# uv-based environment for the Push-T task (lowdim + image), verified on this machine.
+# Trimmed from conda_environment.yaml: dropped pytorch3d, cudatoolkit, robosuite,
+# free-mujoco-py, pybullet-svl, r3m, dm-control, pytorchvideo, ray[tune] -- none of
+# these are imported anywhere on the Push-T training/eval path (only used by the
+# other robomimic/kitchen/blockpush benchmark tasks). robomimic IS kept: the
+# image-based policy (DiffusionUnetHybridImagePolicy, used by pusht_image.yaml)
+# imports robomimic.algo/obs_utils/base_nets for its ResNet encoder helpers.
+#
+# gym==0.21.0 cannot be installed by this file directly (its sdist has malformed
+# extras_require metadata that uv/modern pip reject) -- install it separately first,
+# see the bootstrap step in the setup instructions.
+#
+# torch/torchvision/diffusers/wandb/av are left unpinned (or loosely pinned) and
+# upgraded to current versions: their exact old conda_environment.yaml pins
+# (torch 1.12.1, diffusers 0.11.1, wandb 0.13.3, av 10.0.0) either have no wheels
+# for modern Python/uv or pull in an incompatible huggingface_hub/pkg_resources.
+# diffusion_policy/model/common/lr_scheduler.py (in the sibling ../diffusion_policy
+# fork) carries one patched commit for this: it imports Union/Optional/Optimizer
+# from typing/torch instead of relying on diffusers.optimization re-exporting them,
+# which only worked by accident on diffusers 0.11.1 and breaks on any newer diffusers.
+#
+# diffusion_policy itself is NOT listed below: it lives in the sibling
+# ../diffusion_policy fork and isn't installed via this file. Its setup.py predates
+# PEP 420 namespace packages, so `pip install -e ../diffusion_policy` finds zero
+# packages -- train_pusht_simple.py / eval_pusht_simple.py instead put
+# ../diffusion_policy on sys.path directly. Run these scripts with the venv built
+# from this file, from anywhere, and that sys.path line handles the rest.
+
+torch
+torchvision
+diffusers
+wandb
+av>=13,<14
+
+numpy==1.23.3
+numba==0.56.4
+scipy==1.9.1
+opencv-python==4.6.0.66
+matplotlib==3.6.1
+zarr==2.12.0
+numcodecs==0.10.2
+h5py==3.7.0
+hydra-core==1.2.0
+einops==0.4.1
+tqdm==4.64.1
+dill==0.3.5.1
+scikit-image==0.19.3
+pymunk==6.2.1
+shapely==1.8.4
+imageio==2.22.0
+imageio-ffmpeg==0.4.7
+psutil==5.9.2
+click==8.0.4
+imagecodecs==2022.9.26
+pygame==2.1.2
+pandas
+robomimic==0.2.0
