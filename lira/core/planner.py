@@ -11,9 +11,9 @@ import os
 import mujoco
 import numpy as np
 
-from geometry import clearanceRows, manipulability
+from core.geometry import clearanceRows, manipulability
 # aliased so KinematicsSandbox's same-named methods below don't look recursive
-from mj_interface import site_jacobian as _mj_site_jacobian, point_jacobian as _mj_point_jacobian
+from mj.mj_interface import site_jacobian as _mj_site_jacobian, point_jacobian as _mj_point_jacobian
 
 
 class KinematicsSandbox:

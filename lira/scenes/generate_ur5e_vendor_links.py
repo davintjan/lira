@@ -11,22 +11,24 @@ the tree without ever modifying mujoco_menagerie/ itself.
 
 Usage: python generate_ur5e_vendor_links.py
 """
+import os
 import re
 import shutil
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SRC = HERE.parent / "mujoco_menagerie" / "universal_robots_ur5e"
+SRC = HERE.parent.parent / "mujoco_menagerie" / "universal_robots_ur5e"  # lira/scenes/ -> repo root
 XML_LINK_DIR = HERE / "_vendor" / "universal_robots_ur5e"
 MESH_LINK_DIR = HERE / "assets" / "_vendor" / "universal_robots_ur5e"
 
 
 def relink(out_dir, name, target):
+    """Symlink out_dir/name -> target, stored relative so the tree survives being moved or cloned elsewhere."""
     out_dir.mkdir(parents=True, exist_ok=True)
     link = out_dir / name
     if link.is_symlink() or link.exists():
         link.unlink()
-    link.symlink_to(target)
+    link.symlink_to(os.path.relpath(target, out_dir))
 
 
 def main():
@@ -37,9 +39,9 @@ def main():
         if out_dir.exists():
             shutil.rmtree(out_dir)
 
-    relink(XML_LINK_DIR, "ur5e.xml", "../../../mujoco_menagerie/universal_robots_ur5e/ur5e.xml")
+    relink(XML_LINK_DIR, "ur5e.xml", src_xml)
     for name in mesh_files:
-        relink(MESH_LINK_DIR, name, f"../../../../mujoco_menagerie/universal_robots_ur5e/assets/{name}")
+        relink(MESH_LINK_DIR, name, SRC / "assets" / name)
 
     print(f"Linked ur5e.xml into {XML_LINK_DIR}")
     print(f"Linked {len(mesh_files)} mesh files into {MESH_LINK_DIR}")

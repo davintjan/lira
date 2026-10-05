@@ -5,7 +5,7 @@ import itertools
 import mujoco
 import numpy as np
 
-from geometry import quat2mat, capsuleCapsuleDistance
+from core.geometry import quat2mat, capsuleCapsuleDistance
 
 
 class RobotGeometry:

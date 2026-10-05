@@ -32,16 +32,16 @@ import torch
 from omegaconf import OmegaConf
 
 import ur5_sim as U
-from control import RobotController
-from geometry import clearanceRows, capsuleCapsuleDistance
-from mj_interface import pose_pub, site_jacobian, point_jacobian
-from path_field import PathVelocityField
-from planner import TrajectoryPlanner, plan_trajectory
-from planner_sqp import SQPTrajectoryPlanner
-from scene import RobotGeometry, EnvironmentGeometry, MovingObstacle
+from core.control import RobotController
+from core.geometry import clearanceRows, capsuleCapsuleDistance
+from mj.mj_interface import pose_pub, site_jacobian, point_jacobian
+from core.path_field import PathVelocityField
+from core.planner import TrajectoryPlanner, plan_trajectory
+from core.planner_sqp import SQPTrajectoryPlanner
+from mj.scene import RobotGeometry, EnvironmentGeometry, MovingObstacle
 
 # the policy code lives in the diffusion_policy fork, used in place (see pusht_simple/ for why not pip install)
-DIFFUSION_POLICY_DIR = U.SCENE_DIR.parent / "diffusion_policy"
+DIFFUSION_POLICY_DIR = U.SCENE_DIR.parent.parent / "diffusion_policy"
 sys.path.insert(0, str(DIFFUSION_POLICY_DIR))
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler  # noqa: E402
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D  # noqa: E402

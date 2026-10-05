@@ -19,7 +19,7 @@ import numpy as np
 import osqp
 from scipy import sparse
 
-from planner import TrajectoryPlanner
+from core.planner import TrajectoryPlanner
 
 
 class SQPTrajectoryPlanner(TrajectoryPlanner):

@@ -13,15 +13,15 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
-from control import RobotController, disturbances
-from geometry import clearanceRows, movingObstacleRows
-from scene import RobotGeometry, EnvironmentGeometry, MovingObstacle
-from planner import TrajectoryPlanner, plan_trajectory
-from planner_sqp import SQPTrajectoryPlanner
-from path_field import PathVelocityField
-from mj_interface import pose_pub, obj_pose_pub, site_jacobian, point_jacobian, diff_ik
+from core.control import RobotController, disturbances
+from core.geometry import clearanceRows, movingObstacleRows
+from mj.scene import RobotGeometry, EnvironmentGeometry, MovingObstacle
+from core.planner import TrajectoryPlanner, plan_trajectory
+from core.planner_sqp import SQPTrajectoryPlanner
+from core.path_field import PathVelocityField
+from mj.mj_interface import pose_pub, obj_pose_pub, site_jacobian, point_jacobian, diff_ik
 
-SCENE_DIR = pathlib.Path(__file__).parent
+SCENE_DIR = pathlib.Path(__file__).resolve().parent / "scenes"  # scene.xml and the vendored UR5e it includes
 SEED = None  # IK seed: None = a fresh random one each run (printed at startup); set it to a printed value to replay that run
 PLANNER = "gd"  # "gd": gradient descent (planner.py), "sqp": SQP with collision as a constraint (planner_sqp.py)
 K_P = 1.0

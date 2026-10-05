@@ -11,9 +11,10 @@ mujoco_menagerie/     fork of google-deepmind/mujoco_menagerie (submodule),
 pusht_simple/         our train/eval scripts + requirements.txt, depends on
                       ../diffusion_policy via sys.path (see comments in the
                       scripts / requirements.txt for why not pip install -e)
-ur5_pusht_scene/      MJCF scene: UR5e + table + Push-T block + target region,
-                      built from ../mujoco_menagerie/universal_robots_ur5e via
-                      <include>, not yet wired up to the policy
+lira/                 LiRA (Lightweight Reactive Arm control): an offline planner
+                      (gradient descent or SQP) turned into a stable velocity field,
+                      filtered live by a CBF; UR5e MuJoCo sims, incl. one running
+                      the Push-T policy (see lira/readme.md)
 ```
 
 ## Setup from a fresh clone
