@@ -1,0 +1,16 @@
+mujoco
+osqp
+scipy
+
+# ur5_pusht_sim.py: runs the Push-T diffusion policy from ../diffusion_policy (used in place via sys.path).
+# torch from the CUDA 13.0 index, same build as ../diffusion_policy's venv:
+#   uv pip install --python .venv/bin/python "torch==2.14.0" --index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://pypi.org/simple
+torch==2.14.0
+diffusers==0.39.0
+einops
+omegaconf  # the reference checkpoint stores its config as an OmegaConf object
+dill       # ...and was saved with dill
+# the policy's normalizer imports zarr; zarr 2.12 (diffusion_policy's pin) needs numcodecs 0.10, which has
+# no Python 3.12 build -- the newest zarr 2.x works and is only used for a type check here
+zarr>=2.18,<3
+numcodecs<0.16
