@@ -31,6 +31,8 @@ class RobotController:
             [-u1[1], u1[0], 0],
         ])
         dori = np.array([s1 * s2 + u1 @ u2.T, *(-s1 * u2 + s2 * u1 - Su1 @ u2)])
+        if dori[0] < 0:  # q and -q are the same rotation: take the short way, not the 2pi-minus-angle one
+            dori = -dori
         dori[0] = np.clip(dori[0], -1.0, 1.0)
         v = dori[1:]
         v_norm = np.linalg.norm(v)
