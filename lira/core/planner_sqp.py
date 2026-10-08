@@ -1,6 +1,6 @@
 """
 SQP path optimizer: a drop-in alternative to TrajectoryPlanner's gradient descent (planner.py).
-Pick between them with PLANNER in ur5_sim.py.
+Pick between them with PLANNER in arm_sim.py.
 
 Collision is a constraint here, not a soft cost. Each iteration builds a local model of the
 problem at the current path and solves it exactly as one QP (OSQP):
@@ -19,7 +19,7 @@ import numpy as np
 import osqp
 from scipy import sparse
 
-from core.planner import TrajectoryPlanner
+from core.planner import TrajectoryPlanner, joint_limits
 
 
 class SQPTrajectoryPlanner(TrajectoryPlanner):
@@ -45,7 +45,7 @@ class SQPTrajectoryPlanner(TrajectoryPlanner):
     def optimize(self, q_start, q_goal, sandbox, object_boxes, table_height):
         """SQP from a straight-line seed (endpoints fixed), raising mu until the path is clear."""
         path = np.linspace(np.array(q_start, dtype=float), np.array(q_goal, dtype=float), self.n_waypoints)
-        limits = sandbox.model.jnt_range[:6]
+        limits = np.column_stack(joint_limits(sandbox.model, len(path[0])))
 
         mu = self.mu_init
         for _ in range(self.max_mu_rounds):
@@ -94,10 +94,10 @@ class SQPTrajectoryPlanner(TrajectoryPlanner):
 
     def _linearize(self, path, sandbox, object_boxes, table_height):
         """Local model ingredients at every interior waypoint: clearance rows as (waypoint index, h,
-        dh/dq), the singularity cost, and its gradient (n_interior, 6)."""
+        dh/dq), the singularity cost, and its gradient (n_interior, n_dof)."""
         rows = []
         sing_cost = 0.0
-        sing_grad = np.zeros((len(path) - 2, 6))
+        sing_grad = np.zeros((len(path) - 2, path.shape[1]))
         for k, q in enumerate(path[1:-1]):
             for h, grad in self._collision_rows(q, sandbox, object_boxes, table_height, activation=self.activation):
                 rows.append((k, h, grad))
@@ -113,19 +113,19 @@ class SQPTrajectoryPlanner(TrajectoryPlanner):
         return self._smoothness_cost(stepped) + sing_cost + float(np.sum(sing_grad * dq)) + mu * violation
 
     def _solve_step(self, path, rows, sing_grad, mu, trust, limits):
-        """One QP over z = [dq (interior waypoints x 6 joints, flattened), t (one slack per row)]:
+        """One QP over z = [dq (interior waypoints x n_dof joints, flattened), t (one slack per row)]:
             minimize   smoothness(path + dq) + sing_grad . dq + mu * sum(t)
             subject to h_i + grad_i . dq[k_i] + t_i >= 0,   t >= 0     (L1 penalty via slacks)
                        |dq| <= trust,  joint limits hold after the step
         Smoothness is w_smooth * sum ||p[k+1] - p[k]||^2; with D the (N-1, N) difference matrix and
         L its interior columns, it's w_smooth * ||D @ path + L @ dq||^2 per joint."""
-        n_interior = len(path) - 2
-        n_dq = 6 * n_interior
+        n_interior, n_dof = len(path) - 2, path.shape[1]
+        n_dq = n_dof * n_interior
         n_t = len(rows)
 
         D = np.diff(np.eye(len(path)), axis=0)
         L = D[:, 1:-1]
-        P_dq = 2.0 * self.w_smooth * np.kron(L.T @ L, np.eye(6))
+        P_dq = 2.0 * self.w_smooth * np.kron(L.T @ L, np.eye(n_dof))
         q_dq = (2.0 * self.w_smooth * L.T @ (D @ path)).ravel() + sing_grad.ravel()
         P = sparse.block_diag([sparse.csc_matrix(P_dq), sparse.csc_matrix((n_t, n_t))], format="csc")
         q = np.concatenate([q_dq, np.full(n_t, mu)])
@@ -133,7 +133,7 @@ class SQPTrajectoryPlanner(TrajectoryPlanner):
         # clearance rows: grad . dq[k] + t >= -h
         A_rows = np.zeros((n_t, n_dq + n_t))
         for i, (k, h, grad) in enumerate(rows):
-            A_rows[i, 6 * k:6 * k + 6] = grad
+            A_rows[i, n_dof * k:n_dof * (k + 1)] = grad
             A_rows[i, n_dq + i] = 1.0
         lower_rows = np.array([-h for _, h, _ in rows])
 
@@ -150,5 +150,5 @@ class SQPTrajectoryPlanner(TrajectoryPlanner):
         solver.setup(P, q, A, lower, upper, verbose=False, polish=False, eps_abs=1e-6, eps_rel=1e-6, max_iter=20000)
         result = solver.solve()
         if result.info.status not in ("solved", "solved inaccurate"):
-            return np.zeros((n_interior, 6))  # no step: _sqp sees zero predicted gain and stops
-        return result.x[:n_dq].reshape(n_interior, 6)
+            return np.zeros((n_interior, n_dof))  # no step: _sqp sees zero predicted gain and stops
+        return result.x[:n_dq].reshape(n_interior, n_dof)

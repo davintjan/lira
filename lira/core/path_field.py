@@ -63,7 +63,7 @@ def _lp_with_psd_cuts(cost, A_ub, b_ub, A_eq, b_eq, bounds, basis, n, min_eig, m
 
 
 def fitLyapunovP(path, samples_per_segment=5, min_eig=0.05, required_margin=0.2, max_cuts=60):
-    """Fits P (6x6, symmetric, trace 6, eigenvalues >= min_eig) so the planned path's own direction
+    """Fits P (n x n for n joints, symmetric, trace n, eigenvalues >= min_eig) so the planned path's own direction
     decreases V = (q - q*)^T P (q - q*) everywhere along it. With unit path directions d_k at
     sample points q_k, the margin m is the smallest  -(q_k - q*)^T P d_k / |q_k - q*|  -- for
     P = I that's the cosine of the angle between the path and the straight line to the goal.
@@ -125,7 +125,7 @@ def fitLyapunovP(path, samples_per_segment=5, min_eig=0.05, required_margin=0.2,
 
 
 class PathVelocityField:
-    """u(q) for following `path` (N, 6) to its last point. Built once per plan: fits P and caches
+    """u(q) for following `path` (N, n_dof) to its last point. Built once per plan: fits P and caches
     the segments; calling it costs only the per-tick evaluation.
 
     k_tangent:    rad/s, forward speed along the path

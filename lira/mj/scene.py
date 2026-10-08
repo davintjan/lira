@@ -1,35 +1,37 @@
 """Scene geometry: RobotGeometry tracks the arm's self-collision capsules; EnvironmentGeometry tracks
 the tabletop and t-block. Both read model.* once at init and refresh world poses via update(data)."""
+import hashlib
 import itertools
+import json
+import pathlib
 
 import mujoco
 import numpy as np
 
-from core.geometry import quat2mat, capsuleCapsuleDistance
+from core.geometry import quat2mat, capsuleCapsuleDistanceBatch
 
 
 class RobotGeometry:
-    """Self-collision capsules: MuJoCo's real collision geoms (group 3) plus a synthetic base capsule (base ships with none).
-    Also which clearances are worth guarding at all (see _sample_hazards)."""
+    """Self-collision capsules: MuJoCo's real collision geoms (group 3) -- a sphere is a capsule
+    with half-length 0 -- plus an optional synthetic base capsule for robots whose base ships
+    without one. Also which clearances are worth guarding at all (see _sample_hazards).
 
-    # ee sits rigidly off wrist_2/wrist_3 (and the pusher rod, which starts at it -- see
-    # ur5_sim.load_model) by construction, so guarding them for self-collision would just fight
-    # the arm's own fixed geometry.
-    _EXCLUDED_BODIES = {"wrist_2_link", "wrist_3_link", "pusher"}
+    The robot-specific parts are arguments (arm_sim.ROBOTS holds them per robot):
+      excluded_bodies -- bodies the ee sits rigidly off (the last wrist links, the pusher rod) by
+                         construction, so guarding them for the ee's self-collision would just fight
+                         the arm's own fixed geometry
+      base_capsule    -- dict(body_name, local_pos, local_quat, radius, half_length), or None
+    cache_dir, cache_name: where to keep _sample_hazards' result between runs (None = recompute every
+    time). It depends only on the robot's geometry, so the file is named <cache_name>_<hash of
+    everything the sampling reads> -- change the rod, a joint limit, a capsule or a sampling setting
+    and the hash changes, so it's recomputed instead of reused stale."""
 
-    # base has no collision geom in ur5e.xml; fitted by hand to the real
-    # base_0/base_1 mesh vertices (z in [0,0.099], radius 0.076) -- NOT the
-    # base-to-shoulder joint offset (0.163), which overlaps shoulder_link's capsule.
-    _SYNTHETIC_BASE_CAPSULE = dict(
-        body_name="base", local_pos=np.array([0.0, 0.0, 0.0495]),
-        local_quat=np.array([1.0, 0.0, 0.0, 0.0]), radius=0.076, half_length=0.0495,
-    )
-
-    def __init__(self, model):
-        # capsules: filtered (excludes wrist_2/3), used for self-collision.
+    def __init__(self, model, excluded_bodies=(), base_capsule=None, cache_dir=None, cache_name="robot"):
+        # capsules: filtered (excludes excluded_bodies), used for self-collision.
         # env_capsules: unfiltered, used for table/object checks.
         self.capsules = []
         self.env_capsules = []
+        excluded_bodies = set(excluded_bodies)
 
         for gid in range(model.ngeom):
             if model.geom_group[gid] != 3:
@@ -45,24 +47,64 @@ class RobotGeometry:
                 radius=radius, half_length=half_length,
             )
             self.env_capsules.append(entry)
-            if body_name not in self._EXCLUDED_BODIES:
+            if body_name not in excluded_bodies:
                 self.capsules.append(entry)
 
         # base_synthetic: self-collision only -- it's fixed to the world, so
         # its table/object clearance can never change with q.
-        base = self._SYNTHETIC_BASE_CAPSULE
-        base_entry = dict(
-            body_id=model.body(base["body_name"]).id, name="base_synthetic",
-            local_pos=base["local_pos"], local_rot=quat2mat(base["local_quat"]),
-            radius=base["radius"], half_length=base["half_length"],
-        )
-        self.capsules.append(base_entry)
+        base_entries = []
+        if base_capsule is not None:
+            base_entries.append(dict(
+                body_id=model.body(base_capsule["body_name"]).id, name="base_synthetic",
+                local_pos=np.asarray(base_capsule["local_pos"], dtype=float),
+                local_rot=quat2mat(np.asarray(base_capsule["local_quat"], dtype=float)),
+                radius=base_capsule["radius"], half_length=base_capsule["half_length"],
+            ))
+        self.capsules += base_entries
 
         # link_capsules: every capsule incl. base_synthetic; link_pairs index into it.
-        self.link_capsules = self.env_capsules + [base_entry]
-        self.link_pairs = self._sample_hazards(model)
+        self.link_capsules = self.env_capsules + base_entries
+        self.link_pairs = self._cached_hazards(model, cache_dir, cache_name)
 
-    def _sample_hazards(self, model, n_samples=2000, near=0.10, pair_fixed_tol=0.03, still_tol=1e-3, seed=0):
+    _HAZARD_SETTINGS = dict(n_samples=2000, near=0.10, pair_fixed_tol=0.03, still_tol=1e-3, seed=0)
+    _HAZARD_VERSION = 2  # bump whenever _sample_hazards' logic changes, so old cache files stop matching
+
+    def _cached_hazards(self, model, cache_dir, cache_name):
+        """_sample_hazards' result from cache_dir if it was computed for this exact geometry before;
+        otherwise computes it and saves it there."""
+        if cache_dir is None:
+            return self._sample_hazards(model, **self._HAZARD_SETTINGS)
+        path = pathlib.Path(cache_dir) / f"{cache_name}_{self._hazard_key(model)}.json"
+        if path.exists():
+            cached = json.loads(path.read_text())
+            for cap, table, objects in zip(self.env_capsules, cached["guard_table"], cached["guard_objects"]):
+                cap["guard_table"], cap["guard_objects"] = table, objects
+            return [tuple(pair) for pair in cached["link_pairs"]]
+        pairs = self._sample_hazards(model, **self._HAZARD_SETTINGS)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(
+            capsules=[cap["name"] for cap in self.link_capsules],  # for a human reading the file
+            link_pairs=[[int(i), int(j)] for i, j in pairs],
+            guard_table=[cap["guard_table"] for cap in self.env_capsules],
+            guard_objects=[cap["guard_objects"] for cap in self.env_capsules],
+        ), indent=1))
+        return pairs
+
+    def _hazard_key(self, model):
+        """Hash of everything _sample_hazards reads: the kinematic tree (body offsets, joints and their
+        limits), the xml's contact excludes, every capsule (incl. the rod and the synthetic base), the
+        sampling settings and _HAZARD_VERSION."""
+        h = hashlib.sha256()
+        for array in (model.body_parentid, model.body_pos, model.body_quat, model.jnt_type, model.jnt_bodyid,
+                      model.jnt_pos, model.jnt_axis, model.jnt_range[:model.nu], model.exclude_signature):
+            h.update(np.ascontiguousarray(array).tobytes())
+        for cap in self.link_capsules:
+            h.update(np.array([cap["body_id"], *cap["local_pos"], *cap["local_rot"].ravel(),
+                               cap["radius"], cap["half_length"]], dtype=float).tobytes())
+        h.update(json.dumps(dict(self._HAZARD_SETTINGS, version=self._HAZARD_VERSION), sort_keys=True).encode())
+        return h.hexdigest()[:12]
+
+    def _sample_hazards(self, model, n_samples, near, pair_fixed_tol, still_tol, seed):
         """Decides once, by sampling random arm poses, which clearances are worth guarding -- so no
         check ever has to guess per pose. A clearance that never changes is fixed by design, not a
         collision; one that does change always counts, even at a pose where its gradient happens
@@ -72,35 +114,49 @@ class RobotGeometry:
           guard_objects -- False if it never moves at all (shoulder_link spins in place, like the
                            base): no joint can bring it closer to anything.
         Returns the link-vs-link capsule index pairs to guard: drops same-body and parent/child
-        pairs (they meet at their joint by design), pairs that never come within `near` m, and
+        pairs (they meet at their joint by design), pairs the robot xml excludes from contact, pairs that never come within `near` m, and
         pairs whose clearance varies by less than `pair_fixed_tol` m -- those sit rigidly close by
         construction (e.g. upper_arm vs base), so guarding them would only block the arm."""
         caps = self.link_capsules
+        # the robot xml's <contact><exclude> pairs: its author says these bodies don't really collide
+        # (e.g. the iiwa's coarse spheres overlap across a joint where the real links don't)
+        excluded = {frozenset((int(sig) >> 16, int(sig) & 0xFFFF)) for sig in model.exclude_signature}
         candidates = []
         for i, j in itertools.combinations(range(len(caps)), 2):
             bi, bj = caps[i]["body_id"], caps[j]["body_id"]
             if bi == bj or model.body_parentid[bi] == bj or model.body_parentid[bj] == bi:
                 continue
+            if frozenset((bi, bj)) in excluded:
+                continue
             candidates.append((i, j))
+        I, J = np.array(candidates, dtype=int).reshape(-1, 2).T
+
+        # every capsule at once: center = body_pos + body_rot @ local_pos, axis = body_rot @ local z
+        body = np.array([cap["body_id"] for cap in caps])
+        local_pos = np.array([cap["local_pos"] for cap in caps])
+        local_z = np.array([cap["local_rot"][:, 2] for cap in caps])
+        half = np.array([cap["half_length"] for cap in caps])[:, None]
+        radius = np.array([cap["radius"] for cap in caps])
 
         data = mujoco.MjData(model)
-        lo, hi = model.jnt_range[:6, 0], model.jnt_range[:6, 1]
+        lo, hi = model.jnt_range[:model.nu, 0], model.jnt_range[:model.nu, 1]
         rng = np.random.default_rng(seed)
         h_min = np.full(len(candidates), np.inf)
         h_max = np.full(len(candidates), -np.inf)
+        n_env = len(self.env_capsules)
         endpoints, lowest = [], []
         for _ in range(n_samples):
-            data.qpos[:6] = rng.uniform(lo, hi)
+            data.qpos[:model.nu] = rng.uniform(lo, hi)
             mujoco.mj_kinematics(model, data)
-            world = self._capsules_world(data, caps)
-            for k, (i, j) in enumerate(candidates):
-                h, _, _ = capsuleCapsuleDistance(world[i]["a"], world[i]["b"], world[i]["radius"],
-                                                 world[j]["a"], world[j]["b"], world[j]["radius"])
-                h_min[k] = min(h_min[k], h)
-                h_max[k] = max(h_max[k], h)
-            env_world = world[:len(self.env_capsules)]
-            endpoints.append([np.concatenate([cap["a"], cap["b"]]) for cap in env_world])
-            lowest.append([min(cap["a"][2], cap["b"][2]) for cap in env_world])
+            rot = data.xmat[body].reshape(-1, 3, 3)
+            center = data.xpos[body] + np.einsum("nij,nj->ni", rot, local_pos)
+            axis = np.einsum("nij,nj->ni", rot, local_z)
+            A, B = center - half * axis, center + half * axis
+            h, _, _ = capsuleCapsuleDistanceBatch(A[I], B[I], radius[I], A[J], B[J], radius[J])
+            np.minimum(h_min, h, out=h_min)
+            np.maximum(h_max, h, out=h_max)
+            endpoints.append(np.hstack([A[:n_env], B[:n_env]]))
+            lowest.append(np.minimum(A[:n_env, 2], B[:n_env, 2]))
 
         endpoints, lowest = np.array(endpoints), np.array(lowest)
         for k, cap in enumerate(self.env_capsules):
@@ -135,6 +191,10 @@ class RobotGeometry:
     def update_all(self, data):
         """Unfiltered capsules in world frame, for table/object checks."""
         return self._capsules_world(data, self.env_capsules)
+
+    def link_capsules_world(self, data):
+        """Every capsule, incl. the synthetic base, in world frame -- e.g. to draw them."""
+        return self._capsules_world(data, self.link_capsules)
 
     def link_pairs_world(self, data):
         """(capsule, capsule) pairs in world frame this step, for link-vs-link self-collision."""
@@ -182,7 +242,7 @@ class EnvironmentGeometry:
 
 
 class MovingObstacle:
-    """The floating ellipsoid in scene.xml, swept back and forth along `axis` at constant `speed`:
+    """The floating ellipsoid in world.xml, swept back and forth along `axis` at constant `speed`:
     from `center` out to +amplitude, back through center to -amplitude, and so on. update(data)
     moves it (through its mocap pose) and returns it as the CBF sees it.
 

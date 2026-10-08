@@ -3,7 +3,7 @@ UR5 plays Push-T: the diffusion policy trained in the 2-D Push-T simulator (../d
 drives the UR5's pusher rod on the MuJoCo table.
 
 Phases (one state machine in main):
-  reach    SQP plan + PathVelocityField, as in ur5_sim: the probe goes to HOVER_HEIGHT above a
+  reach    SQP plan + PathVelocityField, as in arm_sim: the probe goes to HOVER_HEIGHT above a
            pre-push spot next to the T -- clear of it, so coming down can't land on it
   descend  the probe goes straight down to PUSH_HEIGHT
   push     every 0.1 s (Push-T's 10 Hz): T keypoints + probe position -> Push-T pixels -> policy ->
@@ -15,7 +15,7 @@ Phases (one state machine in main):
            passes; the probe holds still
 
 The policy only ever sees Push-T pixels: PushTFrame maps the table to the Push-T workspace at
-1 px = 1 mm, axes aligned, with Push-T's fixed goal pose on scene.xml's goal body.
+1 px = 1 mm, axes aligned, with Push-T's fixed goal pose on world.xml's goal body.
 
 Run from this directory:  .venv/bin/python ur5_pusht_sim.py
 """
@@ -31,14 +31,13 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-import ur5_sim as U
+import arm_sim as U  # the robot is arm_sim.ROBOT, and its settings
 from core.control import RobotController
 from core.geometry import clearanceRows, capsuleCapsuleDistance
 from mj.mj_interface import pose_pub, site_jacobian, point_jacobian
 from core.path_field import PathVelocityField
-from core.planner import TrajectoryPlanner, plan_trajectory
-from core.planner_sqp import SQPTrajectoryPlanner
-from mj.scene import RobotGeometry, EnvironmentGeometry, MovingObstacle
+from core.planner import plan_trajectory
+from mj.scene import EnvironmentGeometry, MovingObstacle
 
 # the policy code lives in the diffusion_policy fork, used in place (see pusht_simple/ for why not pip install)
 DIFFUSION_POLICY_DIR = U.SCENE_DIR.parent.parent / "diffusion_policy"
@@ -50,7 +49,7 @@ from diffusion_policy.policy.diffusion_unet_lowdim_policy import DiffusionUnetLo
 CHECKPOINT = DIFFUSION_POLICY_DIR / "data/outputs/reference/epoch=0550-test_mean_score=0.969.ckpt"
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 SEED = None              # None = a fresh random one each run (printed); set it to a printed value to replay that run
-PLANNER = "sqp"          # "gd" or "sqp", as in ur5_sim
+PLANNER = "sqp"          # "gd" or "sqp", as in arm_sim
 HOVER_HEIGHT = 0.10      # m: how far above PUSH_HEIGHT the reach phase leaves the probe
 PUSH_HEIGHT = 0.025      # m: probe (rod tip center) height while pushing -- the T is 4 cm tall, the tip clears the table by 1 cm
 PREPUSH_DISTANCE = 0.13  # m from the T's center of mass: clear of the T (it reaches ~0.076 m), its CBF margin and the rod
@@ -64,7 +63,7 @@ PUSH_TIME_LIMIT = 60.0   # s of sim time in the push phase
 REACH_TOL = 0.02         # rad: the reach phase is done once the arm is this close to the planned path's end...
 REACH_PROBE_TOL = 0.03   # m: ...or the probe this close to the hover point (the descend DS takes care of the rest)
 TASK_METRIC_REG = 0.01   # how much the CBF still minds joint motion the probe task doesn't care about
-OBSTACLE = True                # sweep scene.xml's ellipsoid through the arm, as in ur5_sim; False = park it out of the way
+OBSTACLE = True                # sweep world.xml's ellipsoid through the arm, as in arm_sim; False = park it out of the way
 OBSTACLE_CENTER = None         # m, world frame: sweep around this point; None = OBSTACLE_HEIGHT above the T's start
 OBSTACLE_HEIGHT = 0.30         # m: above the T, through the wrist/forearm while pushing (the rod tip is at 2.5 cm, flange ~17.5 cm)
 OBSTACLE_AXIS = [0, 1, 0]      # world frame: sweeps left and right along this
@@ -164,7 +163,7 @@ def _area(poly):
 class PushTFrame:
     """Table <-> Push-T pixels. 1 px = 1 mm and the axes are aligned (pixel x = table x, pixel y =
     table y, angles counter-clockwise seen from above), so a pose maps by a shift and a scale. The
-    shift puts Push-T's fixed goal pose (256, 256 px) on scene.xml's goal body, which must sit at
+    shift puts Push-T's fixed goal pose (256, 256 px) on world.xml's goal body, which must sit at
     Push-T's goal angle, 45 deg."""
 
     SCALE = 0.001  # m per px
@@ -177,7 +176,7 @@ class PushTFrame:
         self.origin = goal.pos[:2] - self.GOAL_PX * self.SCALE  # table xy of pixel (0, 0)
         w, x, y, z = goal.quat
         goal_yaw = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        assert abs(goal_yaw - self.GOAL_ANGLE) < 1e-6, "scene.xml's goal body must be at Push-T's goal angle (45 deg)"
+        assert abs(goal_yaw - self.GOAL_ANGLE) < 1e-6, "world.xml's goal body must be at Push-T's goal angle (45 deg)"
 
     def to_px(self, xy):
         return (np.asarray(xy)[..., :2] - self.origin) / self.SCALE
@@ -186,7 +185,7 @@ class PushTFrame:
         return self.origin + np.asarray(px) * self.SCALE
 
     def block_pose_px(self, data):
-        """The T's Push-T pose: (position px, angle rad) of its body origin -- scene.xml builds the
+        """The T's Push-T pose: (position px, angle rad) of its body origin -- world.xml builds the
         T in Push-T's local frame, so no offset."""
         body = data.body("t_block")
         rot = body.xmat.reshape(3, 3)
@@ -259,8 +258,8 @@ def probe_step(model, data, controller, geometry, env, target, touch_block, obst
     )
     if obstacle is not None:
         rows += U.obstacle_rows(model, data, geometry, obstacle)
-    metric = J_task.T @ J_task + TASK_METRIC_REG * np.eye(6)
-    data.ctrl[:6] = controller.collisionQP(u_des, rows, alpha=U.CBF_ALPHA, u_max=U.JOINT_VEL_MAX, metric=metric)
+    metric = J_task.T @ J_task + TASK_METRIC_REG * np.eye(model.nu)
+    data.ctrl[:model.nu] = controller.collisionQP(u_des, rows, alpha=U.CBF_ALPHA, u_max=U.JOINT_VEL_MAX, metric=metric)
 
 
 def obstacle_clearance(model, data, geometry, obstacle):
@@ -296,15 +295,15 @@ def main():
     print(f"Seed: {seed}   (set SEED = {seed} to replay: IK seeds and diffusion noise -- inference timing still varies run to run)")
     torch.manual_seed(seed)
 
-    model = U.load_model("scene.xml")
+    model = U.load_model()
     data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
+    U.reset_to_start(model, data)
     dt = model.opt.timestep
     frame = PushTFrame(model)
     print(f"Loading policy {CHECKPOINT.name} on {DEVICE}...")
     policy = load_policy(CHECKPOINT, DEVICE)
-    controller = RobotController(data.qpos[:6].copy(), data.qvel[:6].copy(), pose_pub(data)[0], np.zeros(3))
-    geometry = RobotGeometry(model)
+    controller = RobotController(data.qpos[:model.nu].copy(), data.qvel[:model.nu].copy(), pose_pub(data)[0], np.zeros(3))
+    geometry = U.robot_geometry(model)
     env = EnvironmentGeometry(model)
 
     block_px, block_angle = frame.block_pose_px(data)
@@ -315,12 +314,9 @@ def main():
     spot = prepush_spot(frame, data)
     print(f"Pre-push spot: table {np.round(spot, 3).tolist()} m = {np.round(frame.to_px(spot), 1).tolist()} px")
     flange_target = np.append(spot, PUSH_HEIGHT + HOVER_HEIGHT) + U._FLANGE_ABOVE_PROBE
-    # the planner accepts paths up to feasibility_eps (2 mm) inside its margin, but the CBF enforces its margin
-    # exactly -- so plan with a margin that buffer larger, or a path ending right at the margin stops short of it
-    planner_cls = SQPTrajectoryPlanner if PLANNER == "sqp" else TrajectoryPlanner
-    planner = planner_cls(margin=U.CBF_MARGIN + 2 * planner_cls().feasibility_eps)
+    planner = U.make_planner(PLANNER)  # plans with a margin buffer over the CBF's -- see make_planner
     t0 = time.perf_counter()
-    plan = plan_trajectory(model, data, controller, geometry, env, data.qpos[:6].copy(), flange_target,
+    plan = plan_trajectory(model, data, controller, geometry, env, data.qpos[:model.nu].copy(), flange_target,
                            U._QUAT_X180, planner=planner, rng=np.random.default_rng(seed))
     print(f"Planning took {time.perf_counter() - t0:.3f}s")
     if plan is None:
@@ -370,7 +366,7 @@ def main():
             if phase == "reach":
                 U.control_step(model, data, controller, geometry, env, field=field, obstacle=obstacle)
                 hover_point = np.append(spot, PUSH_HEIGHT + HOVER_HEIGHT)
-                if (np.linalg.norm(data.qpos[:6] - path_end) < REACH_TOL
+                if (np.linalg.norm(data.qpos[:model.nu] - path_end) < REACH_TOL
                         or np.linalg.norm(data.site("probe").xpos - hover_point) < REACH_PROBE_TOL):
                     phase = "descend"
                     print(f"[{data.time:6.2f}s] reached the hover point -- descending")

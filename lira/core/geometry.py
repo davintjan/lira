@@ -69,23 +69,30 @@ def capsuleCapsuleDistance(a1, b1, r1, a2, b2, r2):
 
 def capsuleCapsuleDistanceBatch(A1, B1, R1, A2, B2, R2):
     """Batched capsuleCapsuleDistance for N pairs: every array is (N,3) except R1/R2 which are (N,).
-    Assumes every capsule has nonzero length (true for every real link capsule this project guards),
-    so it skips the scalar version's zero-length-capsule branches -- see capsuleCapsuleDistance."""
+    Same branches as the scalar version, zero-length capsules (spheres, e.g. the iiwa's collision
+    geoms) included: the general formula runs on safe denominators, then the point cases override it."""
     D1, D2, R = B1 - A1, B2 - A2, A1 - A2
     len1_sq = np.sum(D1 * D1, axis=1)
     len2_sq = np.sum(D2 * D2, axis=1)
+    point1, point2 = len1_sq < 1e-12, len2_sq < 1e-12
+    safe_len1_sq = np.where(point1, 1.0, len1_sq)
+    safe_len2_sq = np.where(point2, 1.0, len2_sq)
     f = np.sum(D2 * R, axis=1)
     c = np.sum(D1 * R, axis=1)
     b = np.sum(D1 * D2, axis=1)
     denom = len1_sq * len2_sq - b * b
     safe_denom = np.where(denom > 1e-12, denom, 1.0)
     s = np.where(denom > 1e-12, np.clip((b * f - c * len2_sq) / safe_denom, 0.0, 1.0), 0.0)
-    t = (b * s + f) / len2_sq
+    t = (b * s + f) / safe_len2_sq
 
     below, above = t < 0.0, t > 1.0
     t = np.clip(t, 0.0, 1.0)
-    s = np.where(below, np.clip(-c / len1_sq, 0.0, 1.0),
-                 np.where(above, np.clip((b - c) / len1_sq, 0.0, 1.0), s))
+    s = np.where(below, np.clip(-c / safe_len1_sq, 0.0, 1.0),
+                 np.where(above, np.clip((b - c) / safe_len1_sq, 0.0, 1.0), s))
+
+    # segment 1 a point: closest spot on segment 2 to it; segment 2 a point: closest spot on segment 1
+    s = np.where(point1, 0.0, np.where(point2, np.clip(-c / safe_len1_sq, 0.0, 1.0), s))
+    t = np.where(point2, 0.0, np.where(point1, np.clip(f / safe_len2_sq, 0.0, 1.0), t))
 
     C1 = A1 + s[:, None] * D1
     C2 = A2 + t[:, None] * D2
@@ -202,7 +209,7 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
     """Every guarded clearance at one arm pose, as (h, grad) rows -- the single source for the CBF
     (control.collisionQP), the planner cost and the planner's intrusion check.
       h    = clearance - its margin, in m (negative = inside the margin)
-      grad = dh/dq, shape (6,)
+      grad = dh/dq, shape (n_dof,)
     Hazards: the ee point vs each self_capsule (other links + synthetic base); link vs link for
     each of link_pairs; each env_capsule vs the table (table_margin -- several links rest mm above
     it by design, so margin there would make the QP infeasible at rest) and each object box.
@@ -284,7 +291,7 @@ def movingObstacleRows(env_capsules, obstacle, jac_fn, margin):
     capsule-shaped obstacle (a, b, radius, vel -- see scene.MovingObstacle), as
     (h, grad, h_dot_obstacle):
       h              = clearance - margin, in m
-      grad           = dh/dq, shape (6,)
+      grad           = dh/dq, shape (n_dof,)
       h_dot_obstacle = how fast the clearance shrinks from the obstacle's own motion, -n . vel
                        (n points from the obstacle toward the robot)
     so the clearance changes at grad . qdot + h_dot_obstacle. Kept apart from clearanceRows: the

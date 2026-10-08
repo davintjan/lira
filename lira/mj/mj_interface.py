@@ -1,4 +1,6 @@
-"""Glue between live MuJoCo `data` and numpy: pose/Jacobian reads, and one-shot velocity-level IK (diff_ik)."""
+"""Glue between live MuJoCo `data` and numpy: pose/Jacobian reads, and one-shot velocity-level IK (diff_ik).
+The arm is the model's actuated joints, which come first in qpos/qvel (the robot is included before the
+world), so its n_dof = model.nu and its Jacobian columns are the first model.nu."""
 import mujoco
 import numpy as np
 
@@ -19,15 +21,15 @@ def site_jacobian(model, data, site="attachment_site"):
     jacp = np.zeros((3, model.nv))
     jacr = np.zeros((3, model.nv))
     mujoco.mj_jacSite(model, data, jacp, jacr, model.site(site).id)
-    return np.vstack([jacp, jacr])[:, :6]
+    return np.vstack([jacp, jacr])[:, :model.nu]
 
 
 def point_jacobian(model, data, body_id, point):
-    """3x6 position Jacobian of a world-frame point rigidly attached to body_id."""
+    """3 x n_dof position Jacobian of a world-frame point rigidly attached to body_id."""
     jacp = np.zeros((3, model.nv))
     jacr = np.zeros((3, model.nv))
     mujoco.mj_jac(model, data, jacp, jacr, point, body_id)
-    return jacp[:, :6]
+    return jacp[:, :model.nu]
 
 
 def diff_ik(model, data, xdot, omega, damping=1e-2, site="attachment_site"):
