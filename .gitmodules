@@ -1,6 +1,6 @@
 [submodule "diffusion_policy"]
 	path = diffusion_policy
-	url = /home/davintj/diff_pol/diffusion_policy
+	url = https://github.com/davintjan/diffusion_policy.git
 [submodule "mujoco_menagerie"]
 	path = mujoco_menagerie
-	url = /home/davintj/diff_pol/mujoco_menagerie
+	url = https://github.com/google-deepmind/mujoco_menagerie.git
