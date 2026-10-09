@@ -286,7 +286,7 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
     return rows
 
 
-def movingObstacleRows(env_capsules, obstacle, jac_fn, margin):
+def movingObstacleRows(env_capsules, obstacle, jac_fn, margin, activation=np.inf, alpha=np.inf):
     """Clearance rows for every robot capsule that can move (guard_objects) against a moving
     capsule-shaped obstacle (a, b, radius, vel -- see scene.MovingObstacle), as
     (h, grad, h_dot_obstacle):
@@ -295,15 +295,25 @@ def movingObstacleRows(env_capsules, obstacle, jac_fn, margin):
       h_dot_obstacle = how fast the clearance shrinks from the obstacle's own motion, -n . vel
                        (n points from the obstacle toward the robot)
     so the clearance changes at grad . qdot + h_dot_obstacle. Kept apart from clearanceRows: the
-    planner plans once and can't know where a moving obstacle will be, so only the CBF uses these."""
+    planner plans once and can't know where a moving obstacle will be, so only the CBF uses these.
+    Left out, as in clearanceRows: rows whose effective clearance h + h_dot_obstacle / alpha (what
+    the CBF actually holds >= 0) is >= activation -- so an obstacle closing in fast gets its row early."""
+    caps = [cap for cap in env_capsules if cap["guard_objects"]]
+    if not caps:
+        return []
+    A = np.array([cap["a"] for cap in caps])
+    B = np.array([cap["b"] for cap in caps])
+    R = np.array([cap["radius"] for cap in caps])
+    h, C_robot, C_obstacle = capsuleCapsuleDistanceBatch(
+        A, B, R, np.broadcast_to(obstacle["a"], A.shape), np.broadcast_to(obstacle["b"], A.shape),
+        np.full(len(caps), obstacle["radius"]))
+    h = h - margin
     rows = []
-    for cap in env_capsules:
-        if not cap["guard_objects"]:
-            continue
-        h, c_robot, c_obstacle = capsuleCapsuleDistance(cap["a"], cap["b"], cap["radius"],
-                                                        obstacle["a"], obstacle["b"], obstacle["radius"])
-        n = separatingDirection(c_robot - c_obstacle, cap["b"] - cap["a"], obstacle["b"] - obstacle["a"])
-        rows.append((h - margin, n @ jac_fn(cap["body_id"], c_robot), -n @ obstacle["vel"]))
+    for k, cap in enumerate(caps):
+        n = separatingDirection(C_robot[k] - C_obstacle[k], cap["b"] - cap["a"], obstacle["b"] - obstacle["a"])
+        h_dot_obstacle = -n @ obstacle["vel"]
+        if h[k] + h_dot_obstacle / alpha < activation:
+            rows.append((h[k], n @ jac_fn(cap["body_id"], C_robot[k]), h_dot_obstacle))
     return rows
 
 

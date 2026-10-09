@@ -38,14 +38,19 @@ ROBOTS = {
         base_capsule=dict(body_name="base", local_pos=[0.0, 0.0, 0.0495], local_quat=[1.0, 0.0, 0.0, 0.0],
                           radius=0.076, half_length=0.0495),
         start_key=None,  # None = qpos0 (all joints 0, arm stretched out); or a keyframe name from the robot xml
-        gains=dict(k_p=1.0, k_o=1.0, path_k_tangent=8.0, path_k_corrective=2.0),
+        base_pos=[0.0, 0.0, 0.0],  # m, world frame: where the robot's base body is mounted on the table
+        gains=dict(k_p=1.0, k_o=1.0, path_k_tangent=4.0, path_k_corrective=4.0),
     ),
     "iiwa14": dict(
         scene="scene_iiwa14.xml",
         excluded_bodies=("link6", "link7", "pusher"),
         base_capsule=None,  # iiwa14.xml's base already has collision spheres
         start_key="home",   # qpos0 is straight up -- joints 1/3/5/7 aligned, a singularity
-        gains=dict(k_p=1.0, k_o=1.0, path_k_tangent=8.0, path_k_corrective=2.0),
+        # pulled back from the origin: with the rod pointing down its wrist centre rides ~0.28 m above
+        # the probe, and at the origin the near half of the Push-T workspace needs more elbow (A4)
+        # bend than its +-120 deg allows. -0.2 reaches the most of the workspace (65/81 grid points vs 45)
+        base_pos=[-0.2, 0.0, 0.0],
+        gains=dict(k_p=1.0, k_o=1.0, path_k_tangent=4.0, path_k_corrective=4.0),
     ),
 }
 SHOW_COLLISION = True  # overlay the collision capsules/spheres the planner and CBF see (mj.utils.draw_capsules)
@@ -59,6 +64,8 @@ IK_DAMPING = 1e-2   # damped least squares, keeps J^+ finite near singularities
 CBF_ALPHA = 5.0     # self-collision CBF class-K gain: higher = closer/faster approach allowed before braking
 CBF_MARGIN = 0.03   # m: extra clearance the CBF holds beyond the capsules' actual surfaces
 CBF_TABLE_MARGIN = 0.005  # m: much tighter -- several links rest just mm above the table by design
+CBF_ACTIVATION = 0.15     # m past its margin: farther hazards get no CBF row (no Jacobian, smaller QP). One that far
+                          # could only bind if closing faster than CBF_ALPHA * CBF_ACTIVATION (0.75 m/s) -- raise it if links move faster
 PUSHER_RADIUS = 0.015  # m: matches Push-T's pusher circle (15 px at 1 px = 1 mm)
 PUSHER_LENGTH = 0.15   # m, flange to tip: keeps the wrist well above the T while the tip pushes it
 JOINT_VEL_MAX = 10.0  # rad/s: box constraint on the CBF-QP's joint velocity solution
@@ -68,10 +75,10 @@ DISTURBANCE_MAGNITUDE = 0.0       # N: push applied at the end effector (0 disab
 DISTURBANCE_DIRECTION = [1, 1, 1]   # world frame, normalized inside disturbances()
 DISTURBANCE_START = 0            # s of sim time: after the arm has reached the target
 DISTURBANCE_DURATION = 2          # s
-OBSTACLE_CENTER = [0.3545, 0.046, 2.3389]          # m, world frame: [x, y, z] = sweep around this point; None = around the middle of the planned path
+OBSTACLE_CENTER = [0.2545, -0.046, 0.3389]          # m, world frame: [x, y, z] = sweep around this point; None = around the middle of the planned path
 OBSTACLE_AXIS = [0, 1, 0]       # world frame: the ellipsoid sweeps left and right along this
 OBSTACLE_AMPLITUDE = 0.25       # m: how far it goes either side of its center
-OBSTACLE_SPEED = 0.05            # m/s, constant
+OBSTACLE_SPEED = 0.5            # m/s, constant
 _OBJ_OFFSET = [0, 0, 0.1]  # m: where the probe (pusher tip) hovers relative to the T-block
 # IK and the fallback DS steer the flange (attachment_site); with the rod pointing straight down,
 # the flange sits this far above the probe
@@ -93,6 +100,7 @@ def load_model(xml_path=None):
     centre of its rounded tip -- the point that plays Push-T's pusher. The robot xml defines the wrist,
     so the rod can only be added here, not in the scene xml."""
     spec = mujoco.MjSpec.from_file(xml_path or ROBOTS[ROBOT]["scene"])
+    spec.body("base").pos = ROBOTS[ROBOT]["base_pos"]
     flange = spec.site("attachment_site")
     rod = flange.parent.add_body(name="pusher", pos=flange.pos, quat=flange.quat)
     rod.gravcomp = 1.0  # rides on the wrist: held up like the links are
@@ -145,22 +153,25 @@ def reset_to_start(model, data):
     mujoco.mj_forward(model, data)
 
 
-def obstacle_rows(model, data, geometry, obstacle):
-    """CBF rows keeping every robot capsule CBF_MARGIN clear of the moving obstacle (MovingObstacle.update).
-    The obstacle's own motion changes the clearance too: grad . u + h_dot_obstacle >= -alpha * h,
-    which is collisionQP's grad . u >= -alpha * h' with h' = h + h_dot_obstacle / alpha."""
+def obstacle_rows(model, data, env_capsules, obstacle):
+    """CBF rows keeping every robot capsule (env_capsules: RobotGeometry.world's "env") CBF_MARGIN clear of
+    the moving obstacle (MovingObstacle.update). The obstacle's own motion changes the clearance too:
+    grad . u + h_dot_obstacle >= -alpha * h, which is collisionQP's grad . u >= -alpha * h' with
+    h' = h + h_dot_obstacle / alpha."""
     return [(h + h_dot_obstacle / CBF_ALPHA, grad) for h, grad, h_dot_obstacle in movingObstacleRows(
-        geometry.update_all(data), obstacle, lambda body_id, point: point_jacobian(model, data, body_id, point),
-        margin=CBF_MARGIN)]
+        env_capsules, obstacle, lambda body_id, point: point_jacobian(model, data, body_id, point),
+        margin=CBF_MARGIN, activation=CBF_ACTIVATION, alpha=CBF_ALPHA)]
 
 
-def control_step(model, data, controller, geometry, env, field=None, obstacle=None):
+def control_step(model, data, controller, geometry, env, field=None, obstacle=None, caps=None):
     """field=None: straight-line DS (linearPosDS + linearOrientationDS) through diff_ik.
     field=<PathVelocityField>: the planned path's joint-space field instead, bypassing
     the DS/diff_ik entirely. collisionQP filters u_des the same way either case, and its joint
     velocity goes straight to the velocity servos (see load_model). Everything is evaluated at
     the measured state, with no stored command -- time-invariant, nothing to wind up.
-    obstacle: the moving obstacle's capsule and velocity this tick (MovingObstacle.update), or None."""
+    obstacle: the moving obstacle's capsule and velocity this tick (MovingObstacle.update), or None.
+    caps: this tick's RobotGeometry.world(data), if the caller already has it; computed here otherwise."""
+    caps = caps or geometry.world(data)
     ee_pos, ee_quat = pose_pub(data)
     obj_pos, obj_quat = obj_pose_pub(data, "t_block")
     obj_pos = data.body("t_block").xipos.copy()  # hover over the T's center of mass -- its body origin is the bar's edge (world.xml)
@@ -179,13 +190,12 @@ def control_step(model, data, controller, geometry, env, field=None, obstacle=No
         u_des = diff_ik(model, data, xdot_des, w_des, damping=IK_DAMPING)  # nominal joint velocity, no self-collision awareness
 
     rows = clearanceRows(
-        ee_pos, site_jacobian(model, data)[:3], geometry.update(data), geometry.link_pairs_world(data),
-        geometry.update_all(data), env.update(data), env.table_height,
+        ee_pos, site_jacobian(model, data)[:3], caps["self"], caps["pairs"], caps["env"], env.update(data), env.table_height,
         lambda body_id, point: point_jacobian(model, data, body_id, point),
-        margin=CBF_MARGIN, table_margin=CBF_TABLE_MARGIN, activation=np.inf,
+        margin=CBF_MARGIN, table_margin=CBF_TABLE_MARGIN, activation=CBF_ACTIVATION,
     )
     if obstacle is not None:
-        rows += obstacle_rows(model, data, geometry, obstacle)
+        rows += obstacle_rows(model, data, caps["env"], obstacle)
     qdot = controller.collisionQP(u_des, rows, alpha=CBF_ALPHA, u_max=JOINT_VEL_MAX)
 
     data.ctrl[:model.nu] = qdot

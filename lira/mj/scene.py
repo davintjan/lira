@@ -64,6 +64,8 @@ class RobotGeometry:
 
         # link_capsules: every capsule incl. base_synthetic; link_pairs index into it.
         self.link_capsules = self.env_capsules + base_entries
+        index = {id(cap): k for k, cap in enumerate(self.link_capsules)}
+        self._self_index = [index[id(cap)] for cap in self.capsules]  # where world() finds each of capsules
         self.link_pairs = self._cached_hazards(model, cache_dir, cache_name)
 
     _HAZARD_SETTINGS = dict(n_samples=2000, near=0.10, pair_fixed_tol=0.03, still_tol=1e-3, seed=0)
@@ -201,6 +203,14 @@ class RobotGeometry:
         world = self._capsules_world(data, self.link_capsules)
         return [(world[i], world[j]) for i, j in self.link_pairs]
 
+    def world(self, data):
+        """update, update_all and link_pairs_world in one pass -- every capsule moved to world frame
+        once, for a control tick that needs all three: dict(self=..., env=..., pairs=...)."""
+        world = self._capsules_world(data, self.link_capsules)
+        return dict(self=[world[k] for k in self._self_index],
+                    env=world[:len(self.env_capsules)],  # link_capsules = env_capsules + base_entries
+                    pairs=[(world[i], world[j]) for i, j in self.link_pairs])
+
 
 class EnvironmentGeometry:
     """Non-robot obstacles: the tabletop (fixed) and the t-block (moves)."""
@@ -243,15 +253,17 @@ class EnvironmentGeometry:
 
 class MovingObstacle:
     """The floating ellipsoid in world.xml, swept back and forth along `axis` at constant `speed`:
-    from `center` out to +amplitude, back through center to -amplitude, and so on. update(data)
-    moves it (through its mocap pose) and returns it as the CBF sees it.
+    from `center` out to +amplitude, back through center to -amplitude, and so on. With `dwell`
+    set (s) it pauses at the ends instead: from -amplitude across to +amplitude, parked there for
+    `dwell` seconds, back across, parked at -amplitude for `dwell`, and so on. update(data) moves it (through its mocap pose) and
+    returns it as the CBF sees it.
 
     The exact distance from a capsule to an ellipsoid has no closed form, so the CBF gets a capsule
     that encloses the ellipsoid instead: along the longest semi-axis a, radius = the middle
     semi-axis b, half-length a - b. Every cross-section of the ellipsoid fits inside, so keeping
     clear of the capsule keeps clear of the ellipsoid."""
 
-    def __init__(self, model, center, axis=(0.0, 1.0, 0.0), amplitude=0.25, speed=0.3, body_name="obstacle"):
+    def __init__(self, model, center, axis=(0.0, 1.0, 0.0), amplitude=0.25, speed=0.3, dwell=None, body_name="obstacle"):
         body_id = model.body(body_name).id
         self.mocap_id = model.body_mocapid[body_id]
         geom_id = next(g for g in range(model.ngeom) if model.geom_bodyid[g] == body_id)
@@ -264,18 +276,31 @@ class MovingObstacle:
         self.axis = np.asarray(axis, dtype=float) / np.linalg.norm(axis)
         self.amplitude = amplitude
         self.speed = speed
+        self.dwell = dwell
 
     def update(self, data):
         """Moves the obstacle to where it is at data.time; returns its capsule (a, b, radius) and
         its velocity vel, all world frame."""
         a = self.amplitude
-        phase = (self.speed * data.time) % (4.0 * a)  # one cycle: 0 -> +a -> 0 -> -a -> 0
-        if phase < a:
-            offset, direction = phase, 1.0
-        elif phase < 3.0 * a:
-            offset, direction = 2.0 * a - phase, -1.0
+        if self.dwell is not None:  # from -a: cross to +a, wait, cross back to -a, wait, and so on
+            cross = 2.0 * a / self.speed  # s per crossing
+            tau = data.time % (2.0 * (cross + self.dwell))
+            if tau < cross:
+                offset, direction = -a + self.speed * tau, 1.0
+            elif tau < cross + self.dwell:
+                offset, direction = a, 0.0  # parked: zero velocity for the CBF
+            elif tau < 2.0 * cross + self.dwell:
+                offset, direction = a - self.speed * (tau - cross - self.dwell), -1.0
+            else:
+                offset, direction = -a, 0.0
         else:
-            offset, direction = phase - 4.0 * a, 1.0
+            phase = (self.speed * data.time) % (4.0 * a)  # one cycle: 0 -> +a -> 0 -> -a -> 0
+            if phase < a:
+                offset, direction = phase, 1.0
+            elif phase < 3.0 * a:
+                offset, direction = 2.0 * a - phase, -1.0
+            else:
+                offset, direction = phase - 4.0 * a, 1.0
         pos = self.center + offset * self.axis
         data.mocap_pos[self.mocap_id] = pos
 

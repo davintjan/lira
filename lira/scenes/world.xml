@@ -45,8 +45,9 @@
          bar on the far (+y) side with the stem pointing toward -y. -->
     <body name="t_block" pos="0.4 0.21 0.02" quat="0 0 0 1">
       <freejoint/>
-      <geom name="t_bar" type="box" size="0.06 0.015 0.02" pos="0 0.015 0" material="tblock_mat"/>
-      <geom name="t_stem" type="box" size="0.015 0.045 0.02" pos="0 0.075 0" material="tblock_mat"/>
+      <!-- density 4000 kg/m^3 -> 1.0 kg in all (MuJoCo's default 1000 made it 0.25 kg, light enough to fly off the rod) -->
+      <geom name="t_bar" type="box" size="0.06 0.015 0.02" pos="0 0.015 0" density="4000" material="tblock_mat"/>
+      <geom name="t_stem" type="box" size="0.015 0.045 0.02" pos="0 0.075 0" density="4000" material="tblock_mat"/>
     </body>
 
     <!-- Goal: Push-T's fixed goal pose (256, 256 px, 45 deg), placed where the Push-T workspace

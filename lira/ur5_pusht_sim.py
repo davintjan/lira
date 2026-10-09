@@ -33,7 +33,7 @@ from omegaconf import OmegaConf
 
 import arm_sim as U  # the robot is arm_sim.ROBOT, and its settings
 from core.control import RobotController
-from core.geometry import clearanceRows, capsuleCapsuleDistance
+from core.geometry import clearanceRows, capsuleCapsuleDistanceBatch
 from mj.mj_interface import pose_pub, site_jacobian, point_jacobian
 from core.path_field import PathVelocityField
 from core.planner import plan_trajectory
@@ -64,11 +64,13 @@ REACH_TOL = 0.02         # rad: the reach phase is done once the arm is this clo
 REACH_PROBE_TOL = 0.03   # m: ...or the probe this close to the hover point (the descend DS takes care of the rest)
 TASK_METRIC_REG = 0.01   # how much the CBF still minds joint motion the probe task doesn't care about
 OBSTACLE = True                # sweep world.xml's ellipsoid through the arm, as in arm_sim; False = park it out of the way
-OBSTACLE_CENTER = None         # m, world frame: sweep around this point; None = OBSTACLE_HEIGHT above the T's start
+OBSTACLE_CENTER = [0.0545, -0.046, 0.3389]         # m, world frame: sweep around this point; None = OBSTACLE_HEIGHT above the T's start
 OBSTACLE_HEIGHT = 0.30         # m: above the T, through the wrist/forearm while pushing (the rod tip is at 2.5 cm, flange ~17.5 cm)
 OBSTACLE_AXIS = [0, 1, 0]      # world frame: sweeps left and right along this
 OBSTACLE_AMPLITUDE = 0.25      # m either side of its center
-OBSTACLE_SPEED = 0.05           # m/s, constant
+OBSTACLE_SPEED = 0.3           # m/s, constant
+OBSTACLE_DWELL = 5.0           # s: starts at -OBSTACLE_AMPLITUDE (along OBSTACLE_AXIS), crosses, parks this long at
+                               # each end before crossing back; None = sweep back and forth without stopping
 
 # Push-T's 9 block keypoints in the T's local frame (px), as PushTKeypointsEnv.genenerate_keypoint_manager_params()
 # makes them: farthest-point samples of the rendered T with seed 0, so always these same values. Generated in
@@ -224,7 +226,7 @@ def prepush_spot(frame, data):
     return best if best is not None else com + PREPUSH_DISTANCE * away
 
 
-def probe_step(model, data, controller, geometry, env, target, touch_block, obstacle=None):
+def probe_step(model, data, controller, geometry, env, target, touch_block, obstacle=None, caps=None):
     """One tick of the Cartesian DS on the probe: xdot = PROBE_GAIN * (target - probe), capped at
     PROBE_MAX_SPEED, while the rod is turned toward vertical. The task is 5-D -- probe position plus
     the rod's tilt -- and leaves the spin about the rod free: the rod is round, so spinning changes
@@ -233,7 +235,9 @@ def probe_step(model, data, controller, geometry, env, target, touch_block, obst
     task into joint velocities; the CBF filters them in the same task metric, so it spends the free
     spin first; they go to the velocity servos. touch_block=True lets the rod touch the T (that's the
     pushing) -- every other link stays guarded from it. obstacle: MovingObstacle.update's capsule, or None;
-    the whole arm, rod included, stays clear of it."""
+    the whole arm, rod included, stays clear of it. caps: this tick's RobotGeometry.world(data), or
+    None to compute it here."""
+    caps = caps or geometry.world(data)
     probe_pos = data.site("probe").xpos.copy()
     xdot = PROBE_GAIN * (np.asarray(target) - probe_pos)
     speed = np.linalg.norm(xdot)
@@ -247,28 +251,32 @@ def probe_step(model, data, controller, geometry, env, target, touch_block, obst
     task = np.concatenate([xdot, tilt_basis @ omega])
     u_des = J_task.T @ np.linalg.solve(J_task @ J_task.T + U.IK_DAMPING ** 2 * np.eye(5), task)
 
-    env_capsules = geometry.update_all(data)
+    env_capsules = caps["env"]
     if touch_block:
         env_capsules = [dict(cap, guard_objects=False) if cap["name"] == "pusher" else cap for cap in env_capsules]
     rows = clearanceRows(
-        pose_pub(data)[0], site_jacobian(model, data)[:3], geometry.update(data), geometry.link_pairs_world(data),
+        pose_pub(data)[0], site_jacobian(model, data)[:3], caps["self"], caps["pairs"],
         env_capsules, env.update(data), env.table_height,
         lambda body_id, point: point_jacobian(model, data, body_id, point),
-        margin=U.CBF_MARGIN, table_margin=U.CBF_TABLE_MARGIN, activation=np.inf,
+        margin=U.CBF_MARGIN, table_margin=U.CBF_TABLE_MARGIN, activation=U.CBF_ACTIVATION,
     )
     if obstacle is not None:
-        rows += U.obstacle_rows(model, data, geometry, obstacle)
+        rows += U.obstacle_rows(model, data, caps["env"], obstacle)
     metric = J_task.T @ J_task + TASK_METRIC_REG * np.eye(model.nu)
     data.ctrl[:model.nu] = controller.collisionQP(u_des, rows, alpha=U.CBF_ALPHA, u_max=U.JOINT_VEL_MAX, metric=metric)
 
 
-def obstacle_clearance(model, data, geometry, obstacle):
-    """Closest distance (m) from any robot capsule to the obstacle's capsule, and whether MuJoCo has
-    the obstacle in contact with the robot right now -- the proof the CBF is dodging, not just lucky."""
-    clearance = min(capsuleCapsuleDistance(c["a"], c["b"], c["radius"], obstacle["a"], obstacle["b"], obstacle["radius"])[0]
-                    for c in geometry.update_all(data))
+def obstacle_clearance(model, data, env_capsules, obstacle):
+    """Closest distance (m) from any robot capsule (env_capsules: RobotGeometry.world's "env") to the
+    obstacle's capsule, and whether MuJoCo has the obstacle in contact with the robot right now -- the
+    proof the CBF is dodging, not just lucky."""
+    A = np.array([c["a"] for c in env_capsules])
+    clearance = capsuleCapsuleDistanceBatch(
+        A, np.array([c["b"] for c in env_capsules]), np.array([c["radius"] for c in env_capsules]),
+        np.broadcast_to(obstacle["a"], A.shape), np.broadcast_to(obstacle["b"], A.shape),
+        np.full(len(env_capsules), obstacle["radius"]))[0].min()
     obstacle_body = model.body("obstacle").id
-    robot_bodies = {c["body_id"] for c in geometry.update_all(data)}
+    robot_bodies = {c["body_id"] for c in env_capsules}
     touching = any({model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]} & {obstacle_body}
                    and {model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]} & robot_bodies
                    for c in data.contact[:data.ncon])
@@ -333,9 +341,12 @@ def main():
         else:
             obstacle_center = np.append(data.body("t_block").xipos[:2], OBSTACLE_HEIGHT)
             where = f"{OBSTACLE_HEIGHT} m above the T"
-        mover = MovingObstacle(model, obstacle_center, axis=OBSTACLE_AXIS, amplitude=OBSTACLE_AMPLITUDE, speed=OBSTACLE_SPEED)
+        mover = MovingObstacle(model, obstacle_center, axis=OBSTACLE_AXIS, amplitude=OBSTACLE_AMPLITUDE, speed=OBSTACLE_SPEED,
+                                dwell=OBSTACLE_DWELL)
         print(f"Obstacle: around {np.round(mover.center, 3).tolist()} ({where}), "
-              f"sweeps +-{OBSTACLE_AMPLITUDE} m along {OBSTACLE_AXIS} at {OBSTACLE_SPEED} m/s")
+              + (f"crosses +-{OBSTACLE_AMPLITUDE} m along {OBSTACLE_AXIS}, waiting {OBSTACLE_DWELL} s at each end"
+                 if OBSTACLE_DWELL is not None else f"sweeps +-{OBSTACLE_AMPLITUDE} m along {OBSTACLE_AXIS}")
+              + f" at {OBSTACLE_SPEED} m/s")
     else:
         mover = None
         data.mocap_pos[model.body_mocapid[model.body("obstacle").id]] = [-0.5, 0.0, 1.0]  # parked behind the robot
@@ -356,15 +367,16 @@ def main():
         while viewer.is_running():
             t_wall = time.perf_counter()
             obstacle = mover.update(data) if mover is not None else None
+            caps = geometry.world(data)  # every capsule in world frame, once per tick
             if obstacle is not None:
-                clearance, touching = obstacle_clearance(model, data, geometry, obstacle)
+                clearance, touching = obstacle_clearance(model, data, caps["env"], obstacle)
                 min_clearance = min(min_clearance, clearance)
                 if touching and hits == 0:
                     print(f"[{data.time:6.2f}s] WARNING: the obstacle hit the robot")
                 hits += touching
 
             if phase == "reach":
-                U.control_step(model, data, controller, geometry, env, field=field, obstacle=obstacle)
+                U.control_step(model, data, controller, geometry, env, field=field, obstacle=obstacle, caps=caps)
                 hover_point = np.append(spot, PUSH_HEIGHT + HOVER_HEIGHT)
                 if (np.linalg.norm(data.qpos[:model.nu] - path_end) < REACH_TOL
                         or np.linalg.norm(data.site("probe").xpos - hover_point) < REACH_PROBE_TOL):
@@ -372,7 +384,7 @@ def main():
                     print(f"[{data.time:6.2f}s] reached the hover point -- descending")
 
             elif phase == "descend":
-                probe_step(model, data, controller, geometry, env, descend_target, touch_block=False, obstacle=obstacle)
+                probe_step(model, data, controller, geometry, env, descend_target, touch_block=False, obstacle=obstacle, caps=caps)
                 if np.linalg.norm(data.site("probe").xpos - descend_target) < 0.005:
                     phase, push_start, next_policy_time = "push", data.time, data.time
                     print(f"[{data.time:6.2f}s] at push height -- policy takes over")
@@ -402,10 +414,10 @@ def main():
                         pending, pending_time = inference.submit(infer, np.stack(obs_history)), data.time
                     next_policy_time += POLICY_DT
                 push_target = descend_target if target_px is None else np.append(frame.to_table(target_px), PUSH_HEIGHT)
-                probe_step(model, data, controller, geometry, env, push_target, touch_block=True, obstacle=obstacle)
+                probe_step(model, data, controller, geometry, env, push_target, touch_block=True, obstacle=obstacle, caps=caps)
 
             else:  # done: hold still where the probe stopped
-                probe_step(model, data, controller, geometry, env, hold_point, touch_block=True, obstacle=obstacle)
+                probe_step(model, data, controller, geometry, env, hold_point, touch_block=True, obstacle=obstacle, caps=caps)
 
             mujoco.mj_step(model, data)
             draw_targets(viewer, frame, queue, target_px if phase == "push" else None)
