@@ -12,7 +12,7 @@ def quat2mat(q):
     ])
 
 
-def pointCapsuleDistance(p, a, b, r):
+def point_capsule_distance(p, a, b, r):
     """Signed distance from point p to capsule (segment [a,b], radius r); also returns closest point c and clamp t."""
     p, a, b = np.array(p), np.array(a), np.array(b)
     ab = b - a
@@ -23,8 +23,8 @@ def pointCapsuleDistance(p, a, b, r):
     return h, c, t
 
 
-def pointCapsuleDistanceBatch(P, A, B, R):
-    """Batched pointCapsuleDistance: P, A, B are (N,3) arrays, R is (N,). Returns h (N,), C (N,3), t (N,).
+def point_capsule_distance_batch(P, A, B, R):
+    """Batched point_capsule_distance: P, A, B are (N,3) arrays, R is (N,). Returns h (N,), C (N,3), t (N,).
     np.linalg.norm's generic dispatch is expensive for many tiny 3-vectors one at a time (profiled:
     ~25% of a GD optimize() call) -- batching amortizes that overhead across all N at once."""
     AB = B - A
@@ -38,7 +38,7 @@ def pointCapsuleDistanceBatch(P, A, B, R):
     return h, C, t
 
 
-def capsuleCapsuleDistance(a1, b1, r1, a2, b2, r2):
+def capsule_capsule_distance(a1, b1, r1, a2, b2, r2):
     """Signed distance between capsules [a1,b1] and [a2,b2]; also returns the closest points c1, c2 on
     their center segments. Segment-segment closest points per Ericson, Real-Time Collision Detection 5.1.9."""
     a1, b1, a2, b2 = np.array(a1), np.array(b1), np.array(a2), np.array(b2)
@@ -67,8 +67,8 @@ def capsuleCapsuleDistance(a1, b1, r1, a2, b2, r2):
     return h, c1, c2
 
 
-def capsuleCapsuleDistanceBatch(A1, B1, R1, A2, B2, R2):
-    """Batched capsuleCapsuleDistance for N pairs: every array is (N,3) except R1/R2 which are (N,).
+def capsule_capsule_distance_batch(A1, B1, R1, A2, B2, R2):
+    """Batched capsule_capsule_distance for N pairs: every array is (N,3) except R1/R2 which are (N,).
     Same branches as the scalar version, zero-length capsules (spheres, e.g. the iiwa's collision
     geoms) included: the general formula runs on safe denominators, then the point cases override it."""
     D1, D2, R = B1 - A1, B2 - A2, A1 - A2
@@ -101,7 +101,7 @@ def capsuleCapsuleDistanceBatch(A1, B1, R1, A2, B2, R2):
     return h, C1, C2
 
 
-def halfSpaceCapsuleDistance(a, b, radius, plane_height, normal=np.array([0.0, 0.0, 1.0])):
+def half_space_capsule_distance(a, b, radius, plane_height, normal=np.array([0.0, 0.0, 1.0])):
     """Signed clearance of capsule [a,b] above a horizontal plane; t says which endpoint binds."""
     da, db = a @ normal, b @ normal
     if da <= db:
@@ -109,8 +109,8 @@ def halfSpaceCapsuleDistance(a, b, radius, plane_height, normal=np.array([0.0, 0
     return db - radius - plane_height, 1.0
 
 
-def halfSpaceCapsuleDistanceBatch(A, B, R, plane_height, normal=np.array([0.0, 0.0, 1.0])):
-    """Batched halfSpaceCapsuleDistance: A, B are (N,3), R is (N,). Returns h (N,), t (N,)."""
+def half_space_capsule_distance_batch(A, B, R, plane_height, normal=np.array([0.0, 0.0, 1.0])):
+    """Batched half_space_capsule_distance: A, B are (N,3), R is (N,). Returns h (N,), t (N,)."""
     da, db = A @ normal, B @ normal
     use_a = da <= db
     h = np.where(use_a, da, db) - R - plane_height
@@ -118,7 +118,7 @@ def halfSpaceCapsuleDistanceBatch(A, B, R, plane_height, normal=np.array([0.0, 0
     return h, t
 
 
-def pointBoxDistance(p, box_center, box_rot, half_extents):
+def point_box_distance(p, box_center, box_rot, half_extents):
     """Signed distance from point p to an oriented box, plus the world-frame gradient direction."""
     p_local = box_rot.T @ (np.array(p) - box_center)
     q = np.abs(p_local) - half_extents
@@ -136,8 +136,8 @@ def pointBoxDistance(p, box_center, box_rot, half_extents):
     return h, box_rot @ grad_local
 
 
-def pointBoxDistanceBatch(P, box_center, box_rot, half_extents):
-    """Batched pointBoxDistance: N points (P, shape (N,3)) against ONE box. Returns h (N,), grad (N,3).
+def point_box_distance_batch(P, box_center, box_rot, half_extents):
+    """Batched point_box_distance: N points (P, shape (N,3)) against ONE box. Returns h (N,), grad (N,3).
     (Only points are batched, not boxes -- object_boxes has ~2 entries, capsule endpoints ~9-18, so
     the win is batching over capsules; looping the ~2 boxes around this call is negligible.)"""
     p_local = (P - box_center) @ box_rot  # box_rot.T @ v per row, row-vector form
@@ -163,10 +163,10 @@ def pointBoxDistanceBatch(P, box_center, box_rot, half_extents):
     return h, grad_world
 
 
-def capsuleBoxDistanceBatch(A, B, R, box_center, box_rot, half_extents):
-    """Batched capsuleBoxDistance: N capsules (A, B shape (N,3), R shape (N,)) against ONE box."""
-    h_a, g_a = pointBoxDistanceBatch(A, box_center, box_rot, half_extents)
-    h_b, g_b = pointBoxDistanceBatch(B, box_center, box_rot, half_extents)
+def capsule_box_distance_batch(A, B, R, box_center, box_rot, half_extents):
+    """Batched capsule_box_distance: N capsules (A, B shape (N,3), R shape (N,)) against ONE box."""
+    h_a, g_a = point_box_distance_batch(A, box_center, box_rot, half_extents)
+    h_b, g_b = point_box_distance_batch(B, box_center, box_rot, half_extents)
     h_a, h_b = h_a - R, h_b - R
     use_a = h_a <= h_b
     h = np.where(use_a, h_a, h_b)
@@ -175,10 +175,10 @@ def capsuleBoxDistanceBatch(A, B, R, box_center, box_rot, half_extents):
     return h, t, g
 
 
-def capsuleBoxDistance(a, b, radius, box_center, box_rot, half_extents):
+def capsule_box_distance(a, b, radius, box_center, box_rot, half_extents):
     """Capsule-to-box distance, approximated by the worse of the capsule's two endpoints."""
-    h_a, g_a = pointBoxDistance(a, box_center, box_rot, half_extents)
-    h_b, g_b = pointBoxDistance(b, box_center, box_rot, half_extents)
+    h_a, g_a = point_box_distance(a, box_center, box_rot, half_extents)
+    h_b, g_b = point_box_distance(b, box_center, box_rot, half_extents)
     h_a -= radius
     h_b -= radius
     if h_a <= h_b:
@@ -186,7 +186,7 @@ def capsuleBoxDistance(a, b, radius, box_center, box_rot, half_extents):
     return h_b, 1.0, g_b
 
 
-def separatingDirection(disp, axis1, axis2=None):
+def separating_direction(disp, axis1, axis2=None):
     """Unit direction to push two touching shapes apart: along disp (closest point to closest
     point) normally. disp ~ 0 means a point sits on a capsule's axis, or two axes cross -- the
     deepest overlap there is, not a safe case -- and then any direction perpendicular to the
@@ -204,10 +204,10 @@ def separatingDirection(disp, axis1, axis2=None):
     return n / np.linalg.norm(n)
 
 
-def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, object_boxes, table_height,
+def clearance_rows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, object_boxes, table_height,
                   jac_fn, margin, table_margin, activation):
     """Every guarded clearance at one arm pose, as (h, grad) rows -- the single source for the CBF
-    (control.collisionQP), the planner cost and the planner's intrusion check.
+    (cbf.cbf_qp), the planner cost and the planner's intrusion check.
       h    = clearance - its margin, in m (negative = inside the margin)
       grad = dh/dq, shape (n_dof,)
     Hazards: the ee point vs each self_capsule (other links + synthetic base); link vs link for
@@ -216,7 +216,7 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
     Left out: hazards with h >= activation (too far away to matter), and clearances that are fixed
     by design (the capsule's guard_table / guard_objects flags, see RobotGeometry._sample_hazards).
     Every other hazard always gets a row -- even at a pose where its gradient happens to be zero,
-    or where two axes touch and the direction has to be picked (see separatingDirection).
+    or where two axes touch and the direction has to be picked (see separating_direction).
     jac_fn(body_id, point) -> 3x6 position Jacobian of a world point fixed to body_id. A point's
     Jacobian is linear in the point, so jac_fn at an interior point c equals blending the endpoint
     Jacobians -- one call instead of two.
@@ -234,11 +234,11 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
         A = np.array([cap["a"] for cap in self_capsules])
         B = np.array([cap["b"] for cap in self_capsules])
         R = np.array([cap["radius"] for cap in self_capsules])
-        h, C, _ = pointCapsuleDistanceBatch(np.broadcast_to(ee_pos, A.shape), A, B, R)
+        h, C, _ = point_capsule_distance_batch(np.broadcast_to(ee_pos, A.shape), A, B, R)
         h = h - margin
         for k in np.nonzero(h < activation)[0]:
             cap = self_capsules[k]
-            n = separatingDirection(ee_pos - C[k], cap["b"] - cap["a"])
+            n = separating_direction(ee_pos - C[k], cap["b"] - cap["a"])
             rows.append((h[k], n @ (jac_ee - jac_fn(cap["body_id"], C[k]))))
 
     # link vs link: both links move, so clearance rate = n . (velocity of c1 - velocity of c2)
@@ -249,11 +249,11 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
         A2 = np.array([p[1]["a"] for p in link_pairs])
         B2 = np.array([p[1]["b"] for p in link_pairs])
         R2 = np.array([p[1]["radius"] for p in link_pairs])
-        h, C1, C2 = capsuleCapsuleDistanceBatch(A1, B1, R1, A2, B2, R2)
+        h, C1, C2 = capsule_capsule_distance_batch(A1, B1, R1, A2, B2, R2)
         h = h - margin
         for k in np.nonzero(h < activation)[0]:
             cap1, cap2 = link_pairs[k]
-            n = separatingDirection(C1[k] - C2[k], cap1["b"] - cap1["a"], cap2["b"] - cap2["a"])
+            n = separating_direction(C1[k] - C2[k], cap1["b"] - cap1["a"], cap2["b"] - cap2["a"])
             rows.append((h[k], n @ (jac_fn(cap1["body_id"], C1[k]) - jac_fn(cap2["body_id"], C2[k]))))
 
     # link vs table: only capsules whose height is actually q-dependent (guard_table)
@@ -262,7 +262,7 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
         A = np.array([cap["a"] for cap in table_caps])
         B = np.array([cap["b"] for cap in table_caps])
         R = np.array([cap["radius"] for cap in table_caps])
-        h, t = halfSpaceCapsuleDistanceBatch(A, B, R, table_height)
+        h, t = half_space_capsule_distance_batch(A, B, R, table_height)
         h = h - table_margin
         for k in np.nonzero(h < activation)[0]:
             cap = table_caps[k]
@@ -276,7 +276,7 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
         B = np.array([cap["b"] for cap in obj_caps])
         R = np.array([cap["radius"] for cap in obj_caps])
         for box in object_boxes:
-            h, t, g = capsuleBoxDistanceBatch(A, B, R, box["center"], box["rot"], box["half_extents"])
+            h, t, g = capsule_box_distance_batch(A, B, R, box["center"], box["rot"], box["half_extents"])
             h = h - margin
             for k in np.nonzero(h < activation)[0]:
                 cap = obj_caps[k]
@@ -286,7 +286,7 @@ def clearanceRows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, objec
     return rows
 
 
-def movingObstacleRows(env_capsules, obstacle, jac_fn, margin, activation=np.inf, alpha=np.inf):
+def moving_obstacle_rows(env_capsules, obstacle, jac_fn, margin, activation=np.inf, alpha=np.inf):
     """Clearance rows for every robot capsule that can move (guard_objects) against a moving
     capsule-shaped obstacle (a, b, radius, vel -- see scene.MovingObstacle), as
     (h, grad, h_dot_obstacle):
@@ -294,9 +294,9 @@ def movingObstacleRows(env_capsules, obstacle, jac_fn, margin, activation=np.inf
       grad           = dh/dq, shape (n_dof,)
       h_dot_obstacle = how fast the clearance shrinks from the obstacle's own motion, -n . vel
                        (n points from the obstacle toward the robot)
-    so the clearance changes at grad . qdot + h_dot_obstacle. Kept apart from clearanceRows: the
+    so the clearance changes at grad . qdot + h_dot_obstacle. Kept apart from clearance_rows: the
     planner plans once and can't know where a moving obstacle will be, so only the CBF uses these.
-    Left out, as in clearanceRows: rows whose effective clearance h + h_dot_obstacle / alpha (what
+    Left out, as in clearance_rows: rows whose effective clearance h + h_dot_obstacle / alpha (what
     the CBF actually holds >= 0) is >= activation -- so an obstacle closing in fast gets its row early."""
     caps = [cap for cap in env_capsules if cap["guard_objects"]]
     if not caps:
@@ -304,13 +304,13 @@ def movingObstacleRows(env_capsules, obstacle, jac_fn, margin, activation=np.inf
     A = np.array([cap["a"] for cap in caps])
     B = np.array([cap["b"] for cap in caps])
     R = np.array([cap["radius"] for cap in caps])
-    h, C_robot, C_obstacle = capsuleCapsuleDistanceBatch(
+    h, C_robot, C_obstacle = capsule_capsule_distance_batch(
         A, B, R, np.broadcast_to(obstacle["a"], A.shape), np.broadcast_to(obstacle["b"], A.shape),
         np.full(len(caps), obstacle["radius"]))
     h = h - margin
     rows = []
     for k, cap in enumerate(caps):
-        n = separatingDirection(C_robot[k] - C_obstacle[k], cap["b"] - cap["a"], obstacle["b"] - obstacle["a"])
+        n = separating_direction(C_robot[k] - C_obstacle[k], cap["b"] - cap["a"], obstacle["b"] - obstacle["a"])
         h_dot_obstacle = -n @ obstacle["vel"]
         if h[k] + h_dot_obstacle / alpha < activation:
             rows.append((h[k], n @ jac_fn(cap["body_id"], C_robot[k]), h_dot_obstacle))

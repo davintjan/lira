@@ -2,7 +2,7 @@ mujoco
 osqp
 scipy
 
-# ur5_pusht_sim.py: runs the Push-T diffusion policy from ../diffusion_policy (used in place via sys.path).
+# pusht_sim.py: runs the Push-T diffusion policy from ../diffusion_policy (used in place via sys.path).
 # torch from the CUDA 13.0 index, same build as ../diffusion_policy's venv:
 #   uv pip install --python .venv/bin/python "torch==2.14.0" --index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://pypi.org/simple
 torch==2.14.0

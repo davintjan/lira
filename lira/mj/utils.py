@@ -5,7 +5,7 @@ import numpy as np
 
 def draw_capsules(viewer, world_capsules, rgba=(1.0, 0.15, 0.15, 0.35), reset=True):
     """Overlay capsules (dicts with a, b, radius in world frame -- RobotGeometry.update_all,
-    MovingObstacle.update, ...) on the passive viewer: the keep-out shapes collisionQP guards.
+    MovingObstacle.update, ...) on the passive viewer: the keep-out shapes cbf_qp guards.
     A capsule with a == b is a sphere (e.g. the iiwa's collision geoms) and is drawn as one.
     reset=True clears earlier overlays first, so calling it every frame doesn't pile them up;
     reset=False adds to them (draw several sets in different colours)."""

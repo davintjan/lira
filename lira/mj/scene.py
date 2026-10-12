@@ -8,7 +8,7 @@ import pathlib
 import mujoco
 import numpy as np
 
-from core.geometry import quat2mat, capsuleCapsuleDistanceBatch
+from core.geometry import quat2mat, capsule_capsule_distance_batch
 
 
 class RobotGeometry:
@@ -16,7 +16,7 @@ class RobotGeometry:
     with half-length 0 -- plus an optional synthetic base capsule for robots whose base ships
     without one. Also which clearances are worth guarding at all (see _sample_hazards).
 
-    The robot-specific parts are arguments (arm_sim.ROBOTS holds them per robot):
+    The robot-specific parts are arguments (mj.robots.ROBOTS holds them per robot):
       excluded_bodies -- bodies the ee sits rigidly off (the last wrist links, the pusher rod) by
                          construction, so guarding them for the ee's self-collision would just fight
                          the arm's own fixed geometry
@@ -154,7 +154,7 @@ class RobotGeometry:
             center = data.xpos[body] + np.einsum("nij,nj->ni", rot, local_pos)
             axis = np.einsum("nij,nj->ni", rot, local_z)
             A, B = center - half * axis, center + half * axis
-            h, _, _ = capsuleCapsuleDistanceBatch(A[I], B[I], radius[I], A[J], B[J], radius[J])
+            h, _, _ = capsule_capsule_distance_batch(A[I], B[I], radius[I], A[J], B[J], radius[J])
             np.minimum(h_min, h, out=h_min)
             np.maximum(h_max, h, out=h_max)
             endpoints.append(np.hstack([A[:n_env], B[:n_env]]))

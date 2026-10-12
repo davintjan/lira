@@ -3,7 +3,7 @@ Offline motion planning. KinematicsSandbox evaluates kinematics at an
 arbitrary q. TrajectoryPlanner (CHOMP-style) plans a joint-space path and
 scores it by total path cost, not just endpoint quality. plan_trajectory
 ties it together: try every IK candidate, keep the cheapest feasible path.
-Runs once before the control loop starts (see arm_sim.main), not every tick.
+Runs once before the control loop starts, not every tick.
 """
 import multiprocessing as mp
 import os
@@ -11,7 +11,8 @@ import os
 import mujoco
 import numpy as np
 
-from core.geometry import clearanceRows, manipulability
+from core.ds import damped_least_squares, orientation_ds
+from core.geometry import clearance_rows, manipulability
 # aliased so KinematicsSandbox's same-named methods below don't look recursive
 from mj.mj_interface import site_jacobian as _mj_site_jacobian, point_jacobian as _mj_point_jacobian
 
@@ -81,10 +82,10 @@ class TrajectoryPlanner:
 
     def _collision_rows(self, q, sandbox, object_boxes, table_height, activation=0.0):
         """(h, dh/dq) for every hazard within `activation` m of its margin at q -- see
-        geometry.clearanceRows. The default 0 keeps only the violated ones: the cost and the intrusion
+        geometry.clearance_rows. The default 0 keeps only the violated ones: the cost and the intrusion
         check need nothing else."""
         sandbox.set_q(q)
-        return clearanceRows(
+        return clearance_rows(
             sandbox.ee_pos(), sandbox.ee_jacobian_full()[:3], sandbox.self_capsules(), sandbox.link_pairs(),
             sandbox.env_capsules(), object_boxes, table_height, sandbox.point_jacobian,
             margin=self.margin, table_margin=self.table_margin, activation=activation,
@@ -94,7 +95,7 @@ class TrajectoryPlanner:
     def _deepest_intrusion(rows):
         """Deepest intrusion (m) into any collision margin among these rows, 0 if none. Every row
         counts: clearances fixed by design (e.g. shoulder_link vs the table) never become rows in
-        the first place (see geometry.clearanceRows). Collision only, not singularity: nothing live
+        the first place (see geometry.clearance_rows). Collision only, not singularity: nothing live
         enforces manipulability."""
         return max((-h for h, _ in rows), default=0.0)
 
@@ -145,7 +146,7 @@ class TrajectoryPlanner:
         diffs = path[1:] - path[:-1]
         return self.w_smooth * float(np.sum(diffs ** 2))
 
-    def pathCost(self, path, sandbox, object_boxes, table_height):
+    def path_cost(self, path, sandbox, object_boxes, table_height):
         """Total path cost with a breakdown; adds a large feasibility_penalty if
         intrusion_depth exceeds feasibility_eps (see __init__)."""
         collision = 0.0
@@ -184,7 +185,7 @@ class TrajectoryPlanner:
             if step < self.tol:
                 break
 
-        breakdown = self.pathCost(path, sandbox, object_boxes, table_height)
+        breakdown = self.path_cost(path, sandbox, object_boxes, table_height)
         breakdown["iters"] = n_iters
         return path, breakdown
 
@@ -200,22 +201,20 @@ def joint_limits(model, n_dof=None):
     return model.jnt_range[:n_dof, 0] + JOINT_LIMIT_MARGIN, model.jnt_range[:n_dof, 1] - JOINT_LIMIT_MARGIN
 
 
-def numeric_ik(sandbox, target_pos, target_quat, q_seed, controller, model,
-                max_iters=150, pos_tol=5e-3, rot_tol=5e-2, step_scale=0.5, damping=1e-2):
-    """Iterative damped-least-squares IK from a single seed (same twist-tracking math as
-    mj_interface.diff_ik, applied to convergence). Clips to joint_limits (JOINT_LIMIT_MARGIN inside the real ones) every iteration.
+def numeric_ik(sandbox, target_pos, target_quat, q_seed, model,
+               max_iters=150, pos_tol=5e-3, rot_tol=5e-2, step_scale=0.5, damping=1e-2):
+    """Iterative damped-least-squares IK from a single seed (the same
+    twist-tracking math as mj_interface.diff_ik, applied to convergence). Clips to joint_limits (JOINT_LIMIT_MARGIN inside the real ones) every iteration.
     Returns (q, converged)."""
     q = np.array(q_seed, dtype=float)
     lo, hi = joint_limits(model)
     for _ in range(max_iters):
         sandbox.set_q(q)
         pos_err = np.array(target_pos) - sandbox.ee_pos()
-        omega = controller.linearOrientationDS(sandbox.ee_quat(), target_quat, 1.0)  # norm ~ angle error at k=1
+        omega = orientation_ds(sandbox.ee_quat(), target_quat, 1.0)  # norm ~ angle error at k=1
         if np.linalg.norm(pos_err) < pos_tol and np.linalg.norm(omega) < rot_tol:
             return q, True
-        J = sandbox.ee_jacobian_full()
-        twist = np.hstack([pos_err, omega])
-        dq = J.T @ np.linalg.solve(J @ J.T + damping ** 2 * np.eye(6), twist)
+        dq = damped_least_squares(sandbox.ee_jacobian_full(), np.hstack([pos_err, omega]), damping)
         q = np.clip(q + step_scale * dq, lo, hi)
     return q, False
 
@@ -228,8 +227,8 @@ def _wrap_near(q, reference, lo, hi):
     return np.where((wrapped >= lo) & (wrapped <= hi), wrapped, q)
 
 
-def solve_ik_candidates(sandbox, target_pos, target_quat, controller, model, q_current,
-                         n_random_seeds=8, dedupe_tol=0.15, rng=None):
+def solve_ik_candidates(sandbox, target_pos, target_quat, model, q_current,
+                        n_random_seeds=8, dedupe_tol=0.15, rng=None):
     """Multi-start numerical IK: q_current plus random seeds, keep every seed that converges,
     dedupe near-identical solutions (same kinematic branch). Each result is wrapped near
     q_current first (see _wrap_near)."""
@@ -240,7 +239,7 @@ def solve_ik_candidates(sandbox, target_pos, target_quat, controller, model, q_c
 
     candidates = []
     for seed in seeds:
-        q, ok = numeric_ik(sandbox, target_pos, target_quat, seed, controller, model)
+        q, ok = numeric_ik(sandbox, target_pos, target_quat, seed, model)
         if not ok:
             continue
         q = np.clip(_wrap_near(q, q_current, lo, hi), lo, hi)
@@ -272,15 +271,15 @@ def _optimize_worker(args):
     return dict(q_goal=q_goal, path=path, breakdown=breakdown, goal_manip=goal_manip)
 
 
-def plan_trajectory(model, data, controller, geometry, env, q_start, target_pos, target_quat,
-                     planner=None, n_random_seeds=8, parallel=False, n_workers=None, rng=None):
+def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat,
+                    planner=None, n_random_seeds=8, parallel=False, n_workers=None, rng=None):
     """Full pipeline: multi-seed IK for candidate goals, CHOMP-optimize a path to each, pick
     the winner by total path cost (not isolated endpoint quality). Returns None if no seed
     converged, else {'best': ..., 'all_candidates': ...}.
 
     parallel: if True, each surviving candidate's optimize() call runs in its own worker
     process. Workers are forked, so they inherit this exact model -- including anything added
-    after loading the XML, like arm_sim.load_model's pusher rod (reloading the XML would drop it
+    after loading the XML, like mj.model.load_model's pusher rod (reloading the XML would drop it
     and shift every body id after it) -- and each makes its own MjData, which can't be shared
     across processes. False (default): sequential, single-process. Candidates are independent of
     each other, so this only changes wall-clock time, not the result.
@@ -292,8 +291,8 @@ def plan_trajectory(model, data, controller, geometry, env, q_start, target_pos,
     object_boxes = env.update(data)  # block doesn't move during planning -- one snapshot suffices
     table_height = env.table_height
 
-    candidates = solve_ik_candidates(sandbox, target_pos, target_quat, controller, model, q_start,
-                                      n_random_seeds=n_random_seeds, rng=rng)
+    candidates = solve_ik_candidates(sandbox, target_pos, target_quat, model, q_start,
+                                     n_random_seeds=n_random_seeds, rng=rng)
     if not candidates:
         return None
 

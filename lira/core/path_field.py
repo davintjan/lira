@@ -62,7 +62,7 @@ def _lp_with_psd_cuts(cost, A_ub, b_ub, A_eq, b_eq, bounds, basis, n, min_eig, m
     return last
 
 
-def fitLyapunovP(path, samples_per_segment=5, min_eig=0.05, required_margin=0.2, max_cuts=60):
+def fit_lyapunov_p(path, samples_per_segment=5, min_eig=0.05, required_margin=0.2, max_cuts=60):
     """Fits P (n x n for n joints, symmetric, trace n, eigenvalues >= min_eig) so the planned path's own direction
     decreases V = (q - q*)^T P (q - q*) everywhere along it. With unit path directions d_k at
     sample points q_k, the margin m is the smallest  -(q_k - q*)^T P d_k / |q_k - q*|  -- for
@@ -154,7 +154,7 @@ class PathVelocityField:
         seg_len = np.sqrt(self.seg_len_sq)
         self.length_after = np.cumsum(seg_len[::-1])[::-1] - seg_len  # path length after each segment's end
 
-        self.P, self.margin = fitLyapunovP(self.path)
+        self.P, self.margin = fit_lyapunov_p(self.path)
 
     def __call__(self, q):
         q = np.asarray(q, dtype=float)

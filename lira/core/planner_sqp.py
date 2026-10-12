@@ -1,12 +1,12 @@
 """
 SQP path optimizer: a drop-in alternative to TrajectoryPlanner's gradient descent (planner.py).
-Pick between them with PLANNER in arm_sim.py.
+Pick between them with make_planner (common.py) or a sim's --planner flag.
 
 Collision is a constraint here, not a soft cost. Each iteration builds a local model of the
 problem at the current path and solves it exactly as one QP (OSQP):
   - smoothness exactly (it's already quadratic in the waypoints)
   - singularity linearized
-  - every clearance row (h, dh/dq) from geometry.clearanceRows as h + dh/dq . dq >= 0
+  - every clearance row (h, dh/dq) from geometry.clearance_rows as h + dh/dq . dq >= 0
   - a trust region: each joint of each waypoint moves at most `trust` rad per step
 The step is kept only if the real objective improves by at least accept_ratio of what the model
 promised; otherwise the trust region shrinks and the QP is solved again.
@@ -23,7 +23,7 @@ from core.planner import TrajectoryPlanner, joint_limits
 
 
 class SQPTrajectoryPlanner(TrajectoryPlanner):
-    """Same interface and scoring as TrajectoryPlanner -- optimize() returns (path, pathCost
+    """Same interface and scoring as TrajectoryPlanner -- optimize() returns (path, path_cost
     breakdown) -- so plan_trajectory ranks candidates from either planner the same way. Only how
     the path is found differs. Inherits margins, weights and feasibility_eps from TrajectoryPlanner;
     iters and lr there are gradient-descent settings and unused here."""
@@ -56,7 +56,7 @@ class SQPTrajectoryPlanner(TrajectoryPlanner):
                 break
             mu *= self.mu_scale
 
-        return path, self.pathCost(path, sandbox, object_boxes, table_height)
+        return path, self.path_cost(path, sandbox, object_boxes, table_height)
 
     def _sqp(self, path, sandbox, object_boxes, table_height, limits, mu):
         """Trust-region SQP at a fixed mu. Returns the improved path."""
