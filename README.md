@@ -8,18 +8,15 @@ moving obstacles. It runs on a UR5e and a KUKA iiwa14 in MuJoCo.
 The code, and how to run it, is in [lira/](lira/readme.md).
 
 ```
-git clone --recursive git@
-
-
-github.com:davintjan/lira.git
+git clone --recursive git@github.com:davintjan/lira.git
 ```
 
 ## Push-T demo
 
 | | Front | Top |
 |---|---|---|
-| iiwa14 | <video src="https://github.com/user-attachments/assets/7bfb76c5-3218-40b6-b597-9c9f8cacbc95" controls width="400"></video> | <video src="https://github.com/user-attachments/assets/57b6b093-fb27-4427-bee2-7489a32607fc" controls width="400"></video> |
-| UR5e | <video src="https://github.com/user-attachments/assets/b8236538-0268-4a4b-aba8-64105db299b1" controls width="400"></video> | <video src="https://github.com/user-attachments/assets/3f16e201-8184-44e7-b2bc-0c755c02d2fd" controls width="400"></video> |
+| iiwa14 | <img src="lira/videos/iiwa_pusht_front.webp" width="400"> | <img src="lira/videos/iiwa_pusht_top.webp" width="400"> |
+| UR5e | <img src="lira/videos/ur_pusht_front.webp" width="400"> | <img src="lira/videos/ur_pusht_top.webp" width="400"> |
 
 In these videos the arm plays Push-T with the diffusion policy checkpoint from the original paper,
 used as is with no retraining. Each run starts with the arm away from the table, so we first plan a
