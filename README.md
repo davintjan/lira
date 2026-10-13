@@ -15,8 +15,8 @@ git clone --recursive git@github.com:davintjan/lira.git
 
 | | Front | Top |
 |---|---|---|
-| iiwa14 | <video src="lira/videos/iiwa_pusht_front.mp4" controls width="400"></video> | <video src="lira/videos/iiwa_pusht_top.mp4" controls width="400"></video> |
-| UR5e | <video src="lira/videos/ur_pusht_front.mp4" controls width="400"></video> | <video src="lira/videos/ur_pusht_top.mp4" controls width="400"></video> |
+| iiwa14 | <video src="https://github.com/davintjan/lira/blob/main/lira/videos/iiwa_pusht_front.mp4" controls width="400"></video> | <video src="https://github.com/davintjan/lira/blob/main/lira/videos/iiwa_pusht_top.mp4" controls width="400"></video> |
+| UR5e | <video src="https://github.com/davintjan/lira/blob/main/lira/videos/ur_pusht_front.mp4" controls width="400"></video> | <video src="https://github.com/davintjan/lira/blob/main/lira/videos/ur_pusht_top.mp4" controls width="400"></video> |
 
 In these videos the arm plays Push-T with the diffusion policy checkpoint from the original paper,
 used as is with no retraining. Each run starts with the arm away from the table, so we first plan a
