@@ -4,25 +4,6 @@ Plan once offline, then react live: a collision-free joint-space path (gradient 
 becomes a stable velocity field, and a CBF-QP filters it every tick against self-collision, the
 table, objects and moving obstacles.
 
-## Push-T demo
-
-| | Front | Top |
-|---|---|---|
-| iiwa14 | <video src="videos/iiwa_pusht_front.mp4" controls width="400"></video> | <video src="videos/iiwa_pusht_top.mp4" controls width="400"></video> |
-| UR5e | <video src="videos/ur_pusht_front.mp4" controls width="400"></video> | <video src="videos/ur_pusht_top.mp4" controls width="400"></video> |
-
-In these videos the arm plays Push-T with the diffusion policy checkpoint from the original paper,
-used as is with no retraining. Each run starts with the arm away from the table, so we first plan a
-path with SQP to bring it into the workspace. Once it gets there, the policy takes over.
-
-While the policy is running, its actions go through a DS-based controller. The controller follows
-what the policy wants to do and also moves the arm out of the way of the obstacle. The robot only
-knows where the obstacle is at the current moment. It doesn't know where the obstacle is heading or
-how fast it's moving, so all of the dodging is a reaction to where the obstacle is right now.
-
-This isn't vision-based yet. The robot gets the exact pose of the T straight from the simulator
-instead of estimating it from a camera.
-
 ```
 core/      the robot-agnostic math: numpy, osqp, scipy
   planner.py       trajectory planner (gradient descent) + IK candidates + plan_trajectory
