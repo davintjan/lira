@@ -11,16 +11,22 @@ Phases (one state machine in main):
            the current target, through the CBF (the rod may touch the T, nothing else may). The policy
            runs in a background thread, so the sim keeps going while it thinks (pusht.policy.ChunkedPolicy)
   done     the T covers SUCCESS_COVERAGE of the goal (Push-T's success rule) or PUSH_TIME_LIMIT
-           passes; the probe holds still
+           passes; the probe holds still, and on success the obstacle stops where it is
 
 The policy only ever sees Push-T pixels: PushTFrame maps the table to the Push-T workspace at
 1 px = 1 mm, axes aligned, with Push-T's fixed goal pose on world.xml's goal body.
 
-Run from this directory:  .venv/bin/python pusht_sim.py [--robot ur5e] [--seed N] [--no-obstacle]
+Run from this directory:  .venv/bin/python pusht_sim.py [--robot ur5e] [--seed N] [--no-obstacle] [--record out.mp4]
 """
 import argparse
+import contextlib
+import os
 import pathlib
 import time
+
+os.environ.setdefault("MUJOCO_GL", "egl")  # offscreen rendering for --record; must precede `import mujoco`
+# the viewer window: the glfw package's Wayland build crashes on a GNOME setting it can't read (GLib-GIO-ERROR ... antialiasing), its X11 build runs fine through XWayland
+os.environ.setdefault("PYGLFW_LIBRARY_VARIANT", "x11")
 
 import mujoco
 import mujoco.viewer
@@ -32,10 +38,12 @@ from core.path_field import PathVelocityField
 from core.planner import plan_trajectory
 from mj.arm import Arm
 from mj.model import TOOL_DOWN_QUAT
+from mj.recorder import Recorder
 from mj.robots import ROBOTS
 from mj.safety import CBFConfig, ObstacleMonitor, SafetyFilter
 from mj.scene import MovingObstacle
 from mj.tasks import probe_ds
+from mj.utils import draw_sphere
 from pusht.frame import PushTFrame
 from pusht.policy import REFERENCE_CHECKPOINT, ChunkedPolicy, load_policy
 
@@ -58,13 +66,13 @@ TASK_METRIC_REG = 0.01   # how much the CBF still minds joint motion the probe t
 POLICY_DT = 0.1          # s: Push-T's control period
 PREFETCH_ACTIONS = 2     # start inferring the next chunk when this few actions are left, so it's ready in time
 SUCCESS_COVERAGE = 0.95  # Push-T's success threshold: fraction of the goal T covered by the block
-PUSH_TIME_LIMIT = 60.0   # s of sim time in the push phase
+PUSH_TIME_LIMIT = 300.0   # s of sim time in the push phase
 
-OBSTACLE_CENTER = [0.0545, -0.046, 0.3389]  # m, world frame: sweep around this point; None = OBSTACLE_HEIGHT above the T's start
+OBSTACLE_CENTER = [0.3545, 0.146, 0.2589]  # m, world frame: sweep around this point; None = OBSTACLE_HEIGHT above the T's start
 OBSTACLE_HEIGHT = 0.30   # m: above the T, through the wrist/forearm while pushing (the rod tip is at 2.5 cm, flange ~17.5 cm)
 OBSTACLE_AXIS = [0, 1, 0]  # world frame: sweeps left and right along this
-OBSTACLE_AMPLITUDE = 0.25  # m either side of its center
-OBSTACLE_SPEED = 0.3       # m/s, constant
+OBSTACLE_AMPLITUDE = 0.45  # m either side of its center
+OBSTACLE_SPEED = 0.2       # m/s, constant
 OBSTACLE_DWELL = 5.0       # s: starts at -OBSTACLE_AMPLITUDE (along OBSTACLE_AXIS), crosses, parks this long at
                            # each end before crossing back; None = sweep back and forth without stopping
 
@@ -87,16 +95,12 @@ def park_obstacle(arm):
     arm.data.mocap_pos[arm.model.body_mocapid[arm.model.body("obstacle").id]] = [-0.5, 0.0, 1.0]  # behind the robot
 
 
-def draw_targets(viewer, frame, current_px, queued_px):
+def draw_targets(scn, frame, current_px, queued_px):
     """The policy's current target (larger) and its queued ones as spheres at push height."""
-    scn = viewer.user_scn
-    scn.ngeom = 0
-    points = ([(current_px, 0.008, 0.9)] if current_px is not None else []) + [(px, 0.004, 0.5) for px in queued_px]
-    for px, radius, alpha in points:
-        mujoco.mjv_initGeom(scn.geoms[scn.ngeom], type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                            size=np.array([radius, 0, 0]), pos=np.append(frame.to_table(px), PUSH_HEIGHT),
-                            mat=np.eye(3).flatten(), rgba=np.array([0.1, 0.4, 1.0, alpha], dtype=np.float32))
-        scn.ngeom += 1
+    if current_px is not None:
+        draw_sphere(scn, np.append(frame.to_table(current_px), PUSH_HEIGHT), 0.008, (0.1, 0.4, 1.0, 0.9))
+    for px in queued_px:
+        draw_sphere(scn, np.append(frame.to_table(px), PUSH_HEIGHT), 0.004, (0.1, 0.4, 1.0, 0.5))
 
 
 def main(argv=None):
@@ -154,9 +158,14 @@ def main(argv=None):
         u_des, metric = probe_ds(arm, target, PROBE_GAIN, PROBE_MAX_SPEED, robot.k_o, IK_DAMPING, TASK_METRIC_REG)
         arm.command(safety.filter(u_des, caps=caps, obstacle=obstacle_now, metric=metric, touch_block=touch_block))
 
+    def draw_overlays(scn):
+        """The policy's targets, while it's pushing."""
+        draw_targets(scn, frame, policy.target if phase == "push" else None, policy.queue)
+
     dt = arm.model.opt.timestep
     next_policy_time, push_start, hold_point = 0.0, None, None
-    with mujoco.viewer.launch_passive(arm.model, arm.data) as viewer:
+    recording = Recorder(arm.model, args.record) if args.record else contextlib.nullcontext()
+    with mujoco.viewer.launch_passive(arm.model, arm.data) as viewer, recording as recorder:
         while viewer.is_running():
             t_wall = time.perf_counter()
             now = arm.data.time
@@ -172,6 +181,8 @@ def main(argv=None):
                     phase, hold_point = "done", arm.probe_pos()
                     policy.stop()
                     verdict = "SUCCESS" if coverage >= SUCCESS_COVERAGE else "time limit"
+                    if coverage >= SUCCESS_COVERAGE and obstacle is not None:
+                        obstacle.freeze(arm.data)  # task done: the obstacle stops where it is
                     print(f"[{now:6.2f}s] {verdict}: goal covered {coverage * 100:.1f}% after "
                           f"{now - push_start:.1f}s of pushing{obstacle_note(so_far=False)}")
                 else:
@@ -203,7 +214,10 @@ def main(argv=None):
                 probe_to(hold_point, True, obstacle_now, caps)
 
             arm.step()
-            draw_targets(viewer, frame, policy.target if phase == "push" else None, policy.queue)
+            viewer.user_scn.ngeom = 0
+            draw_overlays(viewer.user_scn)
+            if recorder is not None:
+                recorder.capture(arm.data, draw_overlays)
             viewer.sync()
             time.sleep(max(0.0, dt - (time.perf_counter() - t_wall)))  # pace to real time
 

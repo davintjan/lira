@@ -33,20 +33,40 @@ class SafetyFilter:
         caps: this tick's RobotGeometry.world(data), if the caller already has it.
         obstacle: MovingObstacle.update's capsule this tick, or None. The whole arm, rod included,
           stays clear of it.
-        touch_block: let the rod touch the T (that's the pushing); every other link stays guarded."""
+        touch_block: let the rod touch the T, but only as much as u_des asks for (that's the pushing, see
+          _task_contact_rows); every other link stays fully guarded."""
         arm, cfg = self.arm, self.cfg
         caps = caps or arm.geometry.world(arm.data)
+        object_boxes = arm.env.update(arm.data)
         env_capsules = caps["env"]
-        if touch_block:
+        if touch_block:  # the rod's rows against the T come from _task_contact_rows instead
             env_capsules = [dict(cap, guard_objects=False) if cap["name"] == "pusher" else cap for cap in env_capsules]
         rows = clearance_rows(
             arm.flange_pose()[0], site_jacobian(arm.model, arm.data)[:3], caps["self"], caps["pairs"],
-            env_capsules, arm.env.update(arm.data), arm.env.table_height, self._jacobian,
+            env_capsules, object_boxes, arm.env.table_height, self._jacobian,
             margin=cfg.margin, table_margin=cfg.table_margin, activation=cfg.activation,
         )
+        if touch_block:
+            rows += self._task_contact_rows(caps["env"], object_boxes, u_des)
         if obstacle is not None:
             rows += self._obstacle_rows(caps["env"], obstacle)
         return cbf_qp(u_des, rows, alpha=cfg.alpha, u_max=cfg.joint_vel_max, metric=metric)
+
+    def _task_contact_rows(self, env_capsules, object_boxes, u_des):
+        """The rod against the T, when the task means to push it: the filter may not bring the rod
+        closer to the T than u_des itself would. Each row asks
+            grad . u >= min(grad . u_des, -alpha * h)
+        -- the usual CBF bound, or the task's own approach rate if that's faster. So pushing works
+        (the task's approach is always allowed), but dodging something else can only move the rod
+        along or away from the T, never into it. As cbf_qp's grad . u >= -alpha * h', that's
+        h' = max(h, -grad . u_des / alpha)."""
+        cfg = self.cfg
+        rod = [dict(cap, guard_table=False) for cap in env_capsules if cap["name"] == "pusher"]  # table: already guarded
+        rows = clearance_rows(
+            None, None, [], [], rod, object_boxes, self.arm.env.table_height, self._jacobian,
+            margin=cfg.margin, table_margin=cfg.table_margin, activation=cfg.activation,
+        )
+        return [(max(h, -(grad @ u_des) / cfg.alpha), grad) for h, grad in rows]
 
     def _obstacle_rows(self, env_capsules, obstacle):
         """Rows keeping every robot capsule clear of the moving obstacle. Its own motion changes the

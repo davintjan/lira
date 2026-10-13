@@ -277,14 +277,21 @@ class MovingObstacle:
         self.amplitude = amplitude
         self.speed = speed
         self.dwell = dwell
+        self.frozen_at = None  # sim time freeze() was called, or None while it moves
+
+    def freeze(self, data):
+        """Stops it where it is now: from here on, update() keeps it at this pose, at zero velocity."""
+        if self.frozen_at is None:
+            self.frozen_at = data.time
 
     def update(self, data):
-        """Moves the obstacle to where it is at data.time; returns its capsule (a, b, radius) and
-        its velocity vel, all world frame."""
+        """Moves the obstacle to where it is at data.time (or stays put once frozen); returns its
+        capsule (a, b, radius) and its velocity vel, all world frame."""
         a = self.amplitude
+        t = data.time if self.frozen_at is None else self.frozen_at
         if self.dwell is not None:  # from -a: cross to +a, wait, cross back to -a, wait, and so on
             cross = 2.0 * a / self.speed  # s per crossing
-            tau = data.time % (2.0 * (cross + self.dwell))
+            tau = t % (2.0 * (cross + self.dwell))
             if tau < cross:
                 offset, direction = -a + self.speed * tau, 1.0
             elif tau < cross + self.dwell:
@@ -294,13 +301,15 @@ class MovingObstacle:
             else:
                 offset, direction = -a, 0.0
         else:
-            phase = (self.speed * data.time) % (4.0 * a)  # one cycle: 0 -> +a -> 0 -> -a -> 0
+            phase = (self.speed * t) % (4.0 * a)  # one cycle: 0 -> +a -> 0 -> -a -> 0
             if phase < a:
                 offset, direction = phase, 1.0
             elif phase < 3.0 * a:
                 offset, direction = 2.0 * a - phase, -1.0
             else:
                 offset, direction = phase - 4.0 * a, 1.0
+        if self.frozen_at is not None:
+            direction = 0.0  # standing still: zero velocity for the CBF
         pos = self.center + offset * self.axis
         data.mocap_pos[self.mocap_id] = pos
 

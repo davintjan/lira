@@ -7,10 +7,16 @@ it clear of itself, the table, the T and an obstacle sweeping through the worksp
   follow   every tick: PathVelocityField -> SafetyFilter -> velocity servos. If planning failed,
            a straight-line pose DS stands in for the field.
 
-Run from this directory:  .venv/bin/python reach_sim.py [--robot ur5e] [--seed N] [--planner gd]
+Run from this directory:  .venv/bin/python reach_sim.py [--robot ur5e] [--seed N] [--record out.mp4]
 """
 import argparse
+import contextlib
+import os
 import time
+
+os.environ.setdefault("MUJOCO_GL", "egl")  # offscreen rendering for --record; must precede `import mujoco`
+# the viewer window: the glfw package's Wayland build crashes on a GNOME setting it can't read (GLib-GIO-ERROR ... antialiasing), its X11 build runs fine through XWayland
+os.environ.setdefault("PYGLFW_LIBRARY_VARIANT", "x11")
 
 import mujoco
 import mujoco.viewer
@@ -21,6 +27,7 @@ from core.path_field import PathVelocityField
 from core.planner import plan_trajectory
 from mj.arm import Arm
 from mj.model import TOOL_DOWN_QUAT
+from mj.recorder import Recorder
 from mj.robots import ROBOTS
 from mj.safety import CBFConfig, SafetyFilter
 from mj.scene import MovingObstacle
@@ -106,8 +113,15 @@ def main(argv=None):
     print(f"Obstacle: starts at {np.round(obstacle.center, 4).tolist()} ({where}), "
           f"sweeps +-{OBSTACLE_AMPLITUDE} m along {OBSTACLE_AXIS} at {OBSTACLE_SPEED} m/s, heading + first")
 
+    def draw_overlays(scn):
+        """The capsules the planner and CBF see: the arm's (red) and the obstacle's (yellow)."""
+        if not args.hide_collision:
+            draw_capsules(scn, arm.geometry.link_capsules_world(arm.data))
+            draw_capsules(scn, [obstacle_now], rgba=(0.95, 0.75, 0.1, 0.35))
+
     dt = arm.model.opt.timestep  # 0.002 s -> 500 Hz, one control update per sim step
-    with mujoco.viewer.launch_passive(arm.model, arm.data) as viewer:
+    recording = Recorder(arm.model, args.record) if args.record else contextlib.nullcontext()
+    with mujoco.viewer.launch_passive(arm.model, arm.data) as viewer, recording as recorder:
         while viewer.is_running():
             t_wall = time.perf_counter()
             obstacle_now = obstacle.update(arm.data)
@@ -119,9 +133,10 @@ def main(argv=None):
             arm.command(safety.filter(u_des, obstacle=obstacle_now))
             arm.push_flange(DISTURBANCE_MAGNITUDE, DISTURBANCE_DIRECTION, DISTURBANCE_START, DISTURBANCE_DURATION)
             arm.step()
-            if not args.hide_collision:
-                draw_capsules(viewer, arm.geometry.link_capsules_world(arm.data))
-                draw_capsules(viewer, [obstacle_now], rgba=(0.95, 0.75, 0.1, 0.35), reset=False)
+            viewer.user_scn.ngeom = 0
+            draw_overlays(viewer.user_scn)
+            if recorder is not None:
+                recorder.capture(arm.data, draw_overlays)
             viewer.sync()
             time.sleep(max(0.0, dt - (time.perf_counter() - t_wall)))  # pace to real time
 

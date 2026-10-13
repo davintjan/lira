@@ -1,6 +1,8 @@
 mujoco
 osqp
 scipy
+imageio         # --record: video writer
+imageio-ffmpeg  # ...and the ffmpeg it uses (bundled, no system ffmpeg needed)
 
 # pusht_sim.py: runs the Push-T diffusion policy from ../diffusion_policy (used in place via sys.path).
 # torch from the CUDA 13.0 index, same build as ../diffusion_policy's venv:

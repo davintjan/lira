@@ -6,7 +6,8 @@
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0 0 0"/>
     <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="120" elevation="-20"/>
+    <!-- offwidth/offheight: the offscreen framebuffer, big enough for --record's 1280x720 frames -->
+    <global azimuth="120" elevation="-20" offwidth="1920" offheight="1080"/>
   </visual>
 
   <asset>
@@ -30,6 +31,15 @@
   -->
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+
+    <!-- Cameras for --record (mj/recorder.py), also selectable in the viewer with [ and ].
+         fovy = vertical field of view in degrees (MuJoCo's default is 45): smaller zooms in.
+         front: 3/4 view of the arm, the T, the goal and the obstacle, looking at (0.3, 0, 0.15).
+         top:   straight down on the Push-T workspace (512 mm square centred on the goal), +x right
+                and +y up -- the table as the 2-D Push-T policy sees it. High up with a narrow fovy
+                (~0.7 m of table in view), so the arm passing under it isn't blown up by perspective. -->
+    <camera name="front" pos="1.45 -1.05 0.85" xyaxes="0.674 0.738 0  -0.303 0.276 0.912" fovy="40"/>
+    <camera name="top" pos="0.4 -0.025 2.0" xyaxes="1 0 0  0 1 0" fovy="20"/>
     <geom name="floor" size="0 0 0.05" pos="0 0 -0.75" type="plane" material="groundplane"/>
 
     <!-- Tabletop: 1.2m x 1.0m x 0.05m thick, top surface at z=0 -->
@@ -41,17 +51,17 @@
          Built exactly like Push-T's T (diffusion_policy/env/pusht/pusht_env.py add_tee, at
          1 px = 1 mm) and in its local frame: the body origin is the middle of the bar's outer
          edge, the bar spans local y in [0, 30] mm and the stem y in [30, 120] mm. So the body's
-         pose is Push-T's block pose directly (ur5_pusht_sim.PushTFrame). Yaw 180 deg keeps the
+         pose is Push-T's block pose directly (pusht.frame.PushTFrame). Yaw 180 deg keeps the
          bar on the far (+y) side with the stem pointing toward -y. -->
     <body name="t_block" pos="0.4 0.21 0.02" quat="0 0 0 1">
       <freejoint/>
       <!-- density 4000 kg/m^3 -> 1.0 kg in all (MuJoCo's default 1000 made it 0.25 kg, light enough to fly off the rod) -->
-      <geom name="t_bar" type="box" size="0.06 0.015 0.02" pos="0 0.015 0" density="4000" material="tblock_mat"/>
-      <geom name="t_stem" type="box" size="0.015 0.045 0.02" pos="0 0.075 0" density="4000" material="tblock_mat"/>
+      <geom name="t_bar" type="box" size="0.06 0.015 0.02" pos="0 0.015 0" density="8000" material="tblock_mat"/>
+      <geom name="t_stem" type="box" size="0.015 0.045 0.02" pos="0 0.075 0" density="8000" material="tblock_mat"/>
     </body>
 
     <!-- Goal: Push-T's fixed goal pose (256, 256 px, 45 deg), placed where the Push-T workspace
-         maps onto this table -- ur5_pusht_sim.PushTFrame reads this body to set the mapping, so it's
+         maps onto this table -- pusht.frame.PushTFrame reads this body to set the mapping, so it's
          the one place that decides where the workspace is. Same T shape and local frame as the
          block. Visual only (no collision), a flat semi-transparent green T on the tabletop. -->
     <body name="goal" pos="0.4 -0.025 0.001" quat="0.9238795 0 0 0.3826834">
@@ -65,7 +75,7 @@
          scene.MovingObstacle sweeps it back and forth through the arm's path at constant speed.
          It still collides, so if the CBF ever fails to keep the arm clear, the arm really gets hit. -->
     <body name="obstacle" mocap="true" pos="0.3 0 0.4">
-      <geom name="obstacle" type="ellipsoid" size="0.10 0.06 0.05" material="obstacle_mat"/>
+      <geom name="obstacle" type="ellipsoid" size="0.08 0.06 0.05" material="obstacle_mat"/>
     </body>
   </worldbody>
 </mujoco>

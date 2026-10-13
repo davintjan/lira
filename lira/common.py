@@ -13,6 +13,9 @@ def add_common_args(parser):
     parser.add_argument("--planner", choices=sorted(PLANNERS), default="sqp")
     parser.add_argument("--seed", type=int, default=None,
                         help="replay a run: the seed it printed at startup (default: a fresh one)")
+    parser.add_argument("--record", metavar="PATH", default=None,
+                        help="also record video: PATH=out.mp4 writes out_front.mp4 and out_top.mp4 "
+                             "(world.xml's cameras), finished when the viewer closes")
 
 
 def resolve_seed(seed):
