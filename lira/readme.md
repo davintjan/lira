@@ -27,7 +27,7 @@ pusht/     Push-T glue
 scenes/    the MuJoCo world
   world.xml        table, T, goal, obstacle -- shared by every robot
   scene_<robot>.xml  one robot (vendored from mujoco_menagerie) + world.xml
-  scene_dual.xml     two arms facing each other, a Push-T board each, sharing the seam between them
+  scene_dual.xml     two arms facing each other, a Push-T board each, overlapping in the middle
 common.py          setup both sims share: CLI flags, seed, planner, plan report
 reach_sim.py       plan to the T, follow the field, dodge the obstacle
 dual_reach_sim.py  two arms (scene_dual.xml), each reaching over the other's T, kept apart by the CBF
