@@ -27,8 +27,11 @@ pusht/     Push-T glue
 scenes/    the MuJoCo world
   world.xml        table, T, goal, obstacle -- shared by every robot
   scene_<robot>.xml  one robot (vendored from mujoco_menagerie) + world.xml
+  scene_dual.xml     two arms facing each other, a Push-T board each, sharing the seam between them
 common.py          setup both sims share: CLI flags, seed, planner, plan report
 reach_sim.py       plan to the T, follow the field, dodge the obstacle
+dual_reach_sim.py  two arms (scene_dual.xml), each reaching over the other's T, kept apart by the CBF
+dual_pusht_sim.py  two arms, each playing Push-T with its own policy copy; --zigzag swaps the boards
 pusht_sim.py       the arm plays the Push-T diffusion policy
 ```
 
@@ -48,6 +51,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # first tim
 .venv/bin/python scenes/generate_vendor_links.py                     # first time, and after updating mujoco_menagerie
 .venv/bin/python reach_sim.py                                        # --robot ur5e, --seed N, --planner gd; see --help
 .venv/bin/python pusht_sim.py                                        # --no-obstacle, --checkpoint PATH
+.venv/bin/python dual_reach_sim.py                                   # two arms, zig zag: each reaches the other's T; --seed 1
+.venv/bin/python dual_pusht_sim.py                                   # two arms, two Push-Ts; --zigzag, --no-obstacle
 ```
 
 Just the scene in the viewer (from inside `scenes/`: the vendored meshes only resolve when the scene
@@ -56,3 +61,6 @@ is opened by a relative path from there):
 ```
 cd scenes && PYGLFW_LIBRARY_VARIANT=x11 ../.venv/bin/python -m mujoco.viewer --mjcf=scene_ur5e.xml
 ```
+
+`scene_dual.xml` is the two-arm scene (iiwa14 + UR5e, a Push-T board each); load its `home` key in
+the viewer for the start pose.

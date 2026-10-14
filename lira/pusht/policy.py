@@ -12,6 +12,7 @@ from omegaconf import OmegaConf
 # the policy code lives in the diffusion_policy fork, used in place (see pusht_simple/ for why not pip install)
 DIFFUSION_POLICY_DIR = pathlib.Path(__file__).resolve().parents[2] / "diffusion_policy"
 sys.path.insert(0, str(DIFFUSION_POLICY_DIR))
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler  # noqa: E402
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler  # noqa: E402
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D  # noqa: E402
 from diffusion_policy.policy.diffusion_unet_lowdim_policy import DiffusionUnetLowdimPolicy  # noqa: E402
@@ -19,13 +20,16 @@ from diffusion_policy.policy.diffusion_unet_lowdim_policy import DiffusionUnetLo
 REFERENCE_CHECKPOINT = DIFFUSION_POLICY_DIR / "data/outputs/reference/epoch=0550-test_mean_score=0.969.ckpt"
 
 
-def load_policy(checkpoint, device):
+def load_policy(checkpoint, device, ddim_steps=None):
     """The Push-T lowdim diffusion policy from either checkpoint format:
       - the original repo's Hydra workspace checkpoint (train.py): built from its own saved config
         (e.g. the reference one feeds observations by inpainting, obs_as_global_cond=False)
       - train_pusht_simple.py's plain checkpoint: no config inside, so the architecture is rebuilt
         exactly as eval_pusht_simple.py does (observations as global conditioning)
-    EMA weights either way; they include the observation/action normalizer."""
+    EMA weights either way; they include the observation/action normalizer.
+    ddim_steps: sample with DDIM in this many denoising steps instead of the checkpoint's DDPM (100):
+    same weights, ~10x faster -- what the Diffusion Policy paper does on its real robots to keep up
+    with 10 Hz. None keeps DDPM."""
     payload = torch.load(checkpoint, map_location="cpu", pickle_module=dill, weights_only=False)
     if "cfg" in payload:
         cfg = OmegaConf.to_container(payload["cfg"].policy, resolve=True)
@@ -52,6 +56,11 @@ def load_policy(checkpoint, device):
         )
         state = payload["ema_state_dict"]
     policy.load_state_dict(state)
+    if ddim_steps is not None:
+        policy.noise_scheduler = DDIMScheduler(**{k: v for k, v in policy.noise_scheduler.config.items()
+                                                  if k in ("num_train_timesteps", "beta_start", "beta_end",
+                                                           "beta_schedule", "clip_sample", "prediction_type")})
+        policy.num_inference_steps = ddim_steps
     return policy.to(device).eval()
 
 

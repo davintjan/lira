@@ -1,7 +1,10 @@
 """
 Regenerates two symlink trees per robot inside this repo (_vendor/<robot>/<robot>.xml and
 assets/_vendor/<robot>/<meshfile>) that the scene_*.xml files include instead of
-../../mujoco_menagerie directly. One entry per robot in ROBOTS.
+../../mujoco_menagerie directly. One entry per robot in ROBOTS. Each _vendor/<robot>/ also gets an
+"assets" link to its mesh folder: scene_dual.xml loads the robots as <model> assets (to <attach> two
+of them under prefixes), and a <model> resolves its meshes plainly, against its own xml's directory
++ meshdir ("assets").
 
 Why: MuJoCo (confirmed empirically on 3.13.0, undocumented) only applies an
 included file's <compiler meshdir> when that file is reached via a path
@@ -46,6 +49,7 @@ def link_robot(folder, xml_name):
             shutil.rmtree(out_dir)
 
     relink(xml_link_dir, xml_name, src_xml)
+    relink(xml_link_dir, "assets", mesh_link_dir)  # for <model> assets (scene_dual.xml)
     for name in mesh_files:
         relink(mesh_link_dir, name, src / "assets" / name)
     print(f"{folder}: linked {xml_name} and {len(mesh_files)} mesh files")

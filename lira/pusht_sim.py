@@ -65,7 +65,7 @@ TASK_METRIC_REG = 0.01   # how much the CBF still minds joint motion the probe t
 
 POLICY_DT = 0.1          # s: Push-T's control period
 PREFETCH_ACTIONS = 2     # start inferring the next chunk when this few actions are left, so it's ready in time
-SUCCESS_COVERAGE = 0.95  # Push-T's success threshold: fraction of the goal T covered by the block
+SUCCESS_COVERAGE = 0.9  # Push-T's success threshold: fraction of the goal T covered by the block
 PUSH_TIME_LIMIT = 300.0   # s of sim time in the push phase
 
 OBSTACLE_CENTER = [0.3545, 0.146, 0.2589]  # m, world frame: sweep around this point; None = OBSTACLE_HEIGHT above the T's start

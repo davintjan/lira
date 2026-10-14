@@ -317,6 +317,42 @@ def moving_obstacle_rows(env_capsules, obstacle, jac_fn, margin, activation=np.i
     return rows
 
 
+
+def capsule_set_rows(env_capsules, others, jac_fn, margin, activation=np.inf):
+    """Clearance rows for every robot capsule that can move (guard_objects) against each of `others`
+    -- capsules (a, b, radius) held where they are now, e.g. another arm's links -- as (h, grad):
+      h    = clearance - margin, in m
+      grad = dh/dq from this arm's joints only, shape (n_dof,)
+    The other side's motion is left out. When two arms each hold grad_i . u_i >= -alpha * h for the
+    same pair, the pair's clearance changes at h_dot = grad_a . u_a + grad_b . u_b >= -2 * alpha * h:
+    still a CBF (with twice the gain), so the pair stays apart without either arm knowing how the other
+    moves. One row per (this arm's body, other body): the closest of their capsule pairs -- a link made
+    of many spheres (the iiwa's) would otherwise add a row per sphere pair, all pushing the same way.
+    Left out, as in clearance_rows: rows with h >= activation."""
+    caps = [cap for cap in env_capsules if cap["guard_objects"]]
+    if not caps or not others:
+        return []
+    I, J = (idx.ravel() for idx in np.meshgrid(np.arange(len(caps)), np.arange(len(others)), indexing="ij"))
+    A = np.array([cap["a"] for cap in caps])
+    B = np.array([cap["b"] for cap in caps])
+    R = np.array([cap["radius"] for cap in caps])
+    OA = np.array([cap["a"] for cap in others])
+    OB = np.array([cap["b"] for cap in others])
+    OR = np.array([cap["radius"] for cap in others])
+    h, C_robot, C_other = capsule_capsule_distance_batch(A[I], B[I], R[I], OA[J], OB[J], OR[J])
+    h = h - margin
+    closest = {}  # (body, other body) -> index of their closest capsule pair
+    for k in np.nonzero(h < activation)[0]:
+        key = (caps[I[k]]["body_id"], others[J[k]]["body_id"])
+        if key not in closest or h[k] < h[closest[key]]:
+            closest[key] = k
+    rows = []
+    for k in closest.values():
+        cap, other = caps[I[k]], others[J[k]]
+        n = separating_direction(C_robot[k] - C_other[k], cap["b"] - cap["a"], other["b"] - other["a"])
+        rows.append((h[k], n @ jac_fn(cap["body_id"], C_robot[k])))
+    return rows
+
 def manipulability(J):
     """Yoshikawa manipulability index sqrt(det(J J^T))."""
     return np.sqrt(max(np.linalg.det(J @ J.T), 0.0))

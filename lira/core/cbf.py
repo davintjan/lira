@@ -30,7 +30,7 @@ def cbf_qp(u_des, rows, alpha=5.0, u_max=None, metric=None):
         l_bound = np.concatenate([l_bound, np.full(n_dof, -u_max)])
 
     W = np.eye(n_dof) if metric is None else np.asarray(metric)
-    solver = osqp.OSQP()
+    solver = osqp.OSQP(algebra="builtin")  # named: otherwise every call re-probes for the cuda/mkl backends (~2 ms)
     solver.setup(sparse.csc_matrix(2.0 * W), -2.0 * W @ np.asarray(u_des), sparse.csc_matrix(G), l_bound, h_ub,
                  verbose=False)
     result = solver.solve()

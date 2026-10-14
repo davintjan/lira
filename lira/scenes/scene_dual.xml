@@ -1,0 +1,119 @@
+<mujoco model="dual-arm lira scene">
+  <!-- Two arms facing each other across one table, each with its own Push-T board. The goals sit
+       0.24 m apart, so the two 512 mm boards overlap in a shared middle strip ~0.27 m wide (y in
+       [-0.136, 0.136]); both Ts start in it, so the arms work in the shared middle from the first push.
+
+         arm a: iiwa14 at x = -0.5, board a (goal y = -0.12)    top view, +x right, +y up:
+         arm b: ur5e   at x = +0.5, board b (goal y = +0.12)      [ board b ]  ur5e
+                                                          iiwa14  [ board a ]   (overlapping)
+
+       Each board is placed relative to its arm exactly as in the single-arm scenes (base_pos in
+       mj/robots.py + world.xml's goal), so each arm reaches its board as well as it does alone. Arm
+       b is turned 180 deg; its board isn't (Push-T frames stay axis-aligned, goals at 45 deg), which
+       is fine: the 512 mm square looks the same from either side.
+
+       The robots are loaded as <model> assets and attached under the prefixes a_ and b_, since two
+       menagerie xmls share names (base, home, their default classes). Needs the "assets" links that
+       generate_vendor_links.py makes in _vendor/<robot>/. -->
+
+  <!-- the menagerie arms use implicitfast; without this the attach keeps the parent's default (Euler) -->
+  <option integrator="implicitfast"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="135" elevation="-25" offwidth="1920" offheight="1080"/>
+  </visual>
+
+  <asset>
+    <model name="iiwa14" file="_vendor/kuka_iiwa_14/iiwa14.xml"/>
+    <model name="ur5e" file="_vendor/universal_robots_ur5e/ur5e.xml"/>
+
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="table_mat" rgba="0.55 0.4 0.28 1"/>
+    <material name="board_mat" rgba="0.68 0.53 0.38 1"/>
+    <material name="tblock_a_mat" rgba="0.85 0.1 0.1 1"/>
+    <material name="tblock_b_mat" rgba="0.1 0.3 0.85 1"/>
+    <material name="target_mat" rgba="0.1 0.7 0.1 0.35"/>
+    <material name="obstacle_mat" rgba="0.95 0.75 0.1 0.6"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+
+    <!-- front: 3/4 view of both arms and both boards, looking at (0, 0, 0.15).
+         top:   straight down on the two boards (board a left, board b right; iiwa14 at the top of the
+                frame, ur5e at the bottom), framed like world.xml's top camera: ~1.2 m x 0.66 m. -->
+    <camera name="front" pos="1.35 -1.45 1.05" xyaxes="0.732 0.681 0  -0.282 0.303 0.91" fovy="45"/>
+    <camera name="top" pos="0.1 0 2.0" xyaxes="0 1 0  -1 0 0" fovy="19"/>
+    <geom name="floor" size="0 0 0.05" pos="0 0 -0.75" type="plane" material="groundplane"/>
+
+    <!-- Tabletop: 1.4 m x 1.0 m x 0.05 m, top surface at z = 0 (as in world.xml) -->
+    <body name="table" pos="0 0 -0.025">
+      <geom name="table_top" type="box" size="0.7 0.5 0.025" material="table_mat"/>
+    </body>
+
+    <!-- The arms. Mount poses = robots.py's base_pos, moved so the boards (goal = board centre) land
+         at (0.1, -+0.12): iiwa14 0.6 m behind its goal and 0.025 m to its left, as in its own scene;
+         ur5e the same at 0.4 m, turned 180 deg. -->
+    <body name="a_mount" pos="-0.5 -0.095 0">
+      <attach model="iiwa14" body="base" prefix="a_"/>
+    </body>
+    <body name="b_mount" pos="0.5 0.095 0" quat="0 0 0 1">
+      <attach model="ur5e" body="base" prefix="b_"/>
+    </body>
+
+    <!-- The two Push-T workspaces (512 mm squares centred on the goals), drawn on the table; where they
+         overlap is the shared middle. Visual only. -->
+    <geom name="board_a" type="box" size="0.256 0.256 0.0002" pos="0.1 -0.12 0.0002" material="board_mat"
+      contype="0" conaffinity="0"/>
+    <geom name="board_b" type="box" size="0.256 0.256 0.0002" pos="0.1 0.12 0.0001" material="board_mat"
+      contype="0" conaffinity="0"/>
+
+    <!-- Push-T blocks and goals: built as in world.xml (body origin = middle of the bar's outer edge,
+         so the body pose is Push-T's block pose). Both Ts start in the shared middle, bar-first toward
+         each other, stem pointing toward their own goal, offset in x so the start isn't mirror-symmetric. -->
+    <body name="t_block_a" pos="0.05 -0.035 0.02" quat="0 0 0 1">
+      <freejoint/>
+      <geom name="t_bar_a" type="box" size="0.06 0.015 0.02" pos="0 0.015 0" density="8000" material="tblock_a_mat"/>
+      <geom name="t_stem_a" type="box" size="0.015 0.045 0.02" pos="0 0.075 0" density="8000" material="tblock_a_mat"/>
+    </body>
+    <body name="t_block_b" pos="0.15 0.035 0.02">
+      <freejoint/>
+      <geom name="t_bar_b" type="box" size="0.06 0.015 0.02" pos="0 0.015 0" density="8000" material="tblock_b_mat"/>
+      <geom name="t_stem_b" type="box" size="0.015 0.045 0.02" pos="0 0.075 0" density="8000" material="tblock_b_mat"/>
+    </body>
+
+    <body name="goal_a" pos="0.1 -0.12 0.001" quat="0.9238795 0 0 0.3826834">
+      <geom name="goal_bar_a" type="box" size="0.06 0.015 0.001" pos="0 0.015 0" material="target_mat"
+        contype="0" conaffinity="0"/>
+      <geom name="goal_stem_a" type="box" size="0.015 0.045 0.001" pos="0 0.075 0" material="target_mat"
+        contype="0" conaffinity="0"/>
+    </body>
+    <body name="goal_b" pos="0.1 0.12 0.001" quat="0.9238795 0 0 0.3826834">
+      <geom name="goal_bar_b" type="box" size="0.06 0.015 0.001" pos="0 0.015 0" material="target_mat"
+        contype="0" conaffinity="0"/>
+      <geom name="goal_stem_b" type="box" size="0.015 0.045 0.001" pos="0 0.075 0" material="target_mat"
+        contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- Optional moving obstacle (mocap), as in world.xml; parked off the far edge of the table, out of
+         both arms' way and out of the top camera's view. -->
+    <body name="obstacle" mocap="true" pos="0.1 0.75 0.4">
+      <geom name="obstacle" type="ellipsoid" size="0.08 0.06 0.05" material="obstacle_mat"/>
+    </body>
+  </worldbody>
+
+  <!-- Both arms at their menagerie "home" (the attached a_home / b_home each leave the other arm at
+       zero), except the ur5e's shoulder pan: 161 deg instead of -90 swings its tool from beside its
+       base to over its board, like the iiwa14's. The Ts at their poses above. qpos order: a_ arm (7), b_ arm (6), t_block_a, t_block_b. -->
+  <keyframe>
+    <key name="home"
+      qpos="0 0.785398 0 -1.5708 0 0 0  2.81 -1.5708 1.5708 -1.5708 -1.5708 0
+            0.05 -0.035 0.02 0 0 0 1  0.15 0.035 0.02 1 0 0 0"
+      ctrl="0 0.785398 0 -1.5708 0 0 0  2.81 -1.5708 1.5708 -1.5708 -1.5708 0"/>
+  </keyframe>
+</mujoco>

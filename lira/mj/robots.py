@@ -17,6 +17,7 @@ class RobotConfig:
     base_capsule: dict | None     # synthetic self-collision capsule for a base that ships without one
     start_key: str | None         # keyframe in the robot xml to start from; None = qpos0
     base_pos: tuple               # m, world frame: where the base body is mounted on the table
+    base_yaw: float = 0.0         # rad about world z, on top of the robot xml's own base orientation
     k_p: float = 1.0              # 1/s: position DS gain (straight-line fallback)
     k_o: float = 1.0              # 1/s: orientation DS gain
     path_k_tangent: float = 4.0   # rad/s: nominal joint-space speed along the planned path

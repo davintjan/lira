@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from core.cbf import cbf_qp
-from core.geometry import capsule_capsule_distance_batch, clearance_rows, moving_obstacle_rows
+from core.geometry import capsule_capsule_distance_batch, capsule_set_rows, clearance_rows, moving_obstacle_rows
 from mj.mj_interface import point_jacobian, site_jacobian
 
 
@@ -28,11 +28,14 @@ class SafetyFilter:
     def _jacobian(self, body_id, point):
         return point_jacobian(self.arm.model, self.arm.data, body_id, point)
 
-    def filter(self, u_des, caps=None, obstacle=None, metric=None, touch_block=False):
+    def filter(self, u_des, caps=None, obstacle=None, others=None, metric=None, touch_block=False):
         """The safe joint velocity closest to u_des (see core.cbf.cbf_qp; metric: what "closest" means).
         caps: this tick's RobotGeometry.world(data), if the caller already has it.
         obstacle: MovingObstacle.update's capsule this tick, or None. The whole arm, rod included,
           stays clear of it.
+        others: capsules of something else that moves, where they are now -- another arm's links
+          (its RobotGeometry.link_capsules_world). This arm keeps its share of each clearance (see
+          core.geometry.capsule_set_rows); the other arm, filtered the same way, keeps the rest.
         touch_block: let the rod touch the T, but only as much as u_des asks for (that's the pushing, see
           _task_contact_rows); every other link stays fully guarded."""
         arm, cfg = self.arm, self.cfg
@@ -50,6 +53,8 @@ class SafetyFilter:
             rows += self._task_contact_rows(caps["env"], object_boxes, u_des)
         if obstacle is not None:
             rows += self._obstacle_rows(caps["env"], obstacle)
+        if others:
+            rows += capsule_set_rows(caps["env"], others, self._jacobian, margin=cfg.margin, activation=cfg.activation)
         return cbf_qp(u_des, rows, alpha=cfg.alpha, u_max=cfg.joint_vel_max, metric=metric)
 
     def _task_contact_rows(self, env_capsules, object_boxes, u_des):

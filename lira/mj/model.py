@@ -41,17 +41,39 @@ def load_model(robot, pusher=Pusher(), joint_vel_max=10.0):
         same kv, force = kv * (ctrl - qvel), so ctrl is simply the joint velocity the controller
         wants. A velocity servo has no position spring to hold the arm up, so gravity is compensated
         through the actuators (actgravcomp: counted against the motor force limits, as on hardware).
+    The base is also turned by robot.base_yaw about world z.
     Opened by a relative path from inside SCENE_DIR, where the vendored robots' meshes resolve
     (see scenes/generate_vendor_links.py)."""
     with contextlib.chdir(SCENE_DIR):
         return _build(robot, pusher, joint_vel_max)
 
 
+def load_dual_model(scene="scene_dual.xml", prefixes=("a_", "b_"), pusher=Pusher(), joint_vel_max=10.0):
+    """The two-arm scene, with load_model's edits on each arm: a pusher rod (<prefix>pusher, with its
+    <prefix>probe site) and velocity servos. The bases stay where the scene mounts them."""
+    with contextlib.chdir(SCENE_DIR):
+        spec = mujoco.MjSpec.from_file(scene)
+        for prefix in prefixes:
+            _add_pusher(spec, pusher, prefix)
+        _to_velocity_servos(spec, joint_vel_max)
+        return spec.compile()
+
+
 def _build(robot, pusher, joint_vel_max):
     spec = mujoco.MjSpec.from_file(robot.scene)  # relative: MuJoCo only applies the vendored xml's meshdir then
-    spec.body("base").pos = robot.base_pos
+    base = spec.body("base")
+    base.pos = robot.base_pos
+    if robot.base_yaw:
+        turned = np.zeros(4)
+        mujoco.mju_mulQuat(turned, [np.cos(robot.base_yaw / 2), 0, 0, np.sin(robot.base_yaw / 2)], base.quat)
+        base.quat = turned
     _add_pusher(spec, pusher)
+    _to_velocity_servos(spec, joint_vel_max)
+    return spec.compile()
 
+
+def _to_velocity_servos(spec, joint_vel_max):
+    """Every actuator in spec: position servo -> velocity servo, gravity compensated (see load_model)."""
     kv = -spec.compile().actuator_biasprm[:, 2]  # position servo bias is [0, -kp, -kv]
     arm_joints = []
     for act, gain in zip(spec.actuators, kv):
@@ -62,19 +84,19 @@ def _build(robot, pusher, joint_vel_max):
     for joint in arm_joints:
         joint.actgravcomp = True
         joint.parent.gravcomp = 1.0  # the body this joint moves
-    return spec.compile()
 
 
-def _add_pusher(spec, pusher):
-    flange = spec.site("attachment_site")
-    rod = flange.parent.add_body(name="pusher", pos=flange.pos, quat=flange.quat)
+def _add_pusher(spec, pusher, prefix=""):
+    """The rod on <prefix>attachment_site: body and collision geom <prefix>pusher, site <prefix>probe."""
+    flange = spec.site(prefix + "attachment_site")
+    rod = flange.parent.add_body(name=prefix + "pusher", pos=flange.pos, quat=flange.quat)
     rod.gravcomp = 1.0  # rides on the wrist: held up like the links are
     r, length = pusher.radius, pusher.length
-    rod.add_geom(name="pusher", type=mujoco.mjtGeom.mjGEOM_CAPSULE, group=3, contype=1, conaffinity=1,
+    rod.add_geom(name=prefix + "pusher", type=mujoco.mjtGeom.mjGEOM_CAPSULE, group=3, contype=1, conaffinity=1,
                  size=[r, length / 2 - r, 0], pos=[0, 0, length / 2], mass=0.1)
-    rod.add_geom(name="pusher_visual", type=mujoco.mjtGeom.mjGEOM_CYLINDER, group=2, contype=0, conaffinity=0,
+    rod.add_geom(name=prefix + "pusher_visual", type=mujoco.mjtGeom.mjGEOM_CYLINDER, group=2, contype=0, conaffinity=0,
                  size=[r, length / 2 - r, 0], pos=[0, 0, length / 2 - r / 2],
                  density=0, rgba=[0.15, 0.15, 0.15, 1])
-    rod.add_geom(name="pusher_tip_visual", type=mujoco.mjtGeom.mjGEOM_SPHERE, group=2, contype=0, conaffinity=0,
+    rod.add_geom(name=prefix + "pusher_tip_visual", type=mujoco.mjtGeom.mjGEOM_SPHERE, group=2, contype=0, conaffinity=0,
                  size=[r, 0, 0], pos=[0, 0, pusher.tip_offset], density=0, rgba=[0.9, 0.9, 0.9, 1])
-    rod.add_site(name="probe", pos=[0, 0, pusher.tip_offset])
+    rod.add_site(name=prefix + "probe", pos=[0, 0, pusher.tip_offset])

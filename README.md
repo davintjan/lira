@@ -29,3 +29,21 @@ how fast it's moving, so all of the dodging is a reaction to where the obstacle 
 
 This isn't vision-based yet. The robot gets the exact pose of the T straight from the simulator
 instead of estimating it from a camera.
+
+## Dual-arm Push-T demo
+
+| Front | Top |
+|---|---|
+| <img src="lira/videos/dual_pusht_front.webp" width="400"> | <img src="lira/videos/dual_pusht_top.webp" width="400"> |
+
+Here an iiwa14 and a UR5e face each other across one table, and each plays Push-T on its own board:
+the iiwa14 pushes the red T and the UR5e the blue one. The two boards overlap in the middle, where both
+Ts start, so the arms push in the same space while an obstacle sweeps between them.
+
+Each arm runs its own copy of the same checkpoint, and neither policy knows the other arm exists. What
+keeps the arms apart is the CBF: each one treats the other arm's links as obstacles at wherever they are
+right now. Each arm only limits its own part of how fast the gap between them closes, so the arms never
+need to share their plans or velocities.
+
+Here the policy samples with DDIM in 10 steps instead of the checkpoint's original 100-step DDPM, using
+the same weights. Running two policies at 10 Hz on one laptop GPU is too slow with DDPM.

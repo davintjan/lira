@@ -21,20 +21,20 @@ T_AREA_PX = 120 * 30 + 30 * 90
 class PushTFrame:
     """Table <-> Push-T pixels. 1 px = 1 mm and the axes are aligned (pixel x = table x, pixel y =
     table y, angles counter-clockwise seen from above), so a pose maps by a shift and a scale. The
-    shift puts Push-T's fixed goal pose (256, 256 px) on world.xml's goal body, which must sit at
-    Push-T's goal angle, 45 deg."""
+    shift puts Push-T's fixed goal pose (256, 256 px) on the goal body (world.xml's "goal"; in
+    scene_dual.xml each arm has its own), which must sit at Push-T's goal angle, 45 deg."""
 
     SCALE = 0.001  # m per px
     GOAL_PX = np.array([256.0, 256.0])
     GOAL_ANGLE = np.pi / 4
     SIZE_PX = 512
 
-    def __init__(self, model):
-        goal = model.body("goal")
+    def __init__(self, model, goal="goal"):
+        goal = model.body(goal)
         self.origin = goal.pos[:2] - self.GOAL_PX * self.SCALE  # table xy of pixel (0, 0)
         w, x, y, z = goal.quat
         goal_yaw = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        assert abs(goal_yaw - self.GOAL_ANGLE) < 1e-6, "world.xml's goal body must be at Push-T's goal angle (45 deg)"
+        assert abs(goal_yaw - self.GOAL_ANGLE) < 1e-6, "the goal body must be at Push-T's goal angle (45 deg)"
 
     def to_px(self, xy):
         return (np.asarray(xy)[..., :2] - self.origin) / self.SCALE
@@ -78,6 +78,37 @@ class PushTFrame:
             if self.inside(self.to_px(spot), margin_px) and (best is None or (spot - com) @ away > (best - com) @ away):
                 best = spot
         return best if best is not None else com + distance * away
+
+    def prepush_spot_near(self, data, clearance, margin_px, max_off_behind=np.radians(60)):
+        """Table xy to start pushing from, as close to the T as clearance allows: the probe's centre
+        `clearance` m from the T's outline -- measured to its two rectangles, not to its center of mass,
+        so a thin side gets a closer spot than prepush_spot's one distance for every side. Of the
+        directions within max_off_behind of straight behind the T (away from the goal), the one whose
+        spot is nearest the T's center of mass, inside the Push-T workspace by margin_px. If none is,
+        the direction closest to straight behind that is."""
+        com = data.body("t_block").xipos[:2]
+        pos_px, angle = self.block_pose_px(data)
+        away = com - self.to_table(self.GOAL_PX)
+        away = away / np.linalg.norm(away) if np.linalg.norm(away) > 1e-9 else np.array([1.0, 0.0])
+        rot = _rotation(angle)
+        lo = np.array([r.min(axis=0) for r in T_RECTS_LOCAL])  # the rectangles, axis-aligned in the T's frame
+        hi = np.array([r.max(axis=0) for r in T_RECTS_LOCAL])
+        best, best_key = None, None
+        for theta in np.radians(np.arange(0, 360, 5)):
+            direction = np.array([np.cos(theta), np.sin(theta)])
+            for distance in np.arange(0.0, 0.2, 0.002):  # m out from the center of mass, first one clear wins
+                spot = com + distance * direction
+                local = (self.to_px(spot) - pos_px) @ rot  # rot.T @ v, in the T's frame
+                gap_px = np.linalg.norm(np.maximum(np.maximum(lo - local, local - hi), 0.0), axis=1).min()
+                if gap_px * self.SCALE >= clearance:
+                    break
+            if not self.inside(self.to_px(spot), margin_px):
+                continue
+            behind = direction @ away >= np.cos(max_off_behind)
+            key = (behind, -distance if behind else direction @ away)  # behind first: nearest; else most behind
+            if best_key is None or key > best_key:
+                best, best_key = spot, key
+        return best if best is not None else self.prepush_spot(data, 0.13, margin_px)
 
 
 def _rotation(angle):
