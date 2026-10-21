@@ -48,6 +48,5 @@ def print_plan(plan, planner, kind):
 
 
 def print_field(field):
-    eigvals = np.linalg.eigvalsh(field.P)
-    fit = "path decreases V everywhere" if field.margin > 0 else "no quadratic V fits -- filter will cut corners"
-    print(f"Lyapunov fit: margin {field.margin:.3f} ({fit}), P eigenvalues {eigvals.min():.2f}..{eigvals.max():.2f}")
+    print(f"Path field: {field.seg_len.sum():.2f} rad of path, energy V = path left + {field.k_tube:g}/2 * "
+          f"(distance to path)^2, must fall >= {field.min_progress:g} rad/s far from the goal")

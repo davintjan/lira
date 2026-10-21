@@ -8,7 +8,7 @@ table, objects and moving obstacles.
 core/      the robot-agnostic math: numpy, osqp, scipy
   planner.py       trajectory planner (gradient descent) + IK candidates + plan_trajectory
   planner_sqp.py   the same planner as trust-region SQP
-  path_field.py    planned path -> stable velocity field (Lyapunov P fitted to the path)
+  path_field.py    planned path -> stable velocity field (energy = path left + off-path penalty)
   ds.py            reactive DS (position, orientation) and damped-least-squares IK
   cbf.py           the CBF-QP safety filter
   geometry.py      capsule/box distances, CBF clearance rows
