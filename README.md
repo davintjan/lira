@@ -52,13 +52,16 @@ the same weights. Running two policies at 10 Hz on one laptop GPU is too slow wi
 
 | | Front | Top |
 |---|---|---|
-| Zig-zag | <img src="lira/videos/dual_pusht_zigzag_front.webp" width="400"> | <img src="lira/videos/dual_pusht_zigzag_top.webp" width="400"> |
-| Hard config | <img src="lira/videos/dual_pusht_zigzag_hard_config_front.webp" width="400"> | <img src="lira/videos/dual_pusht_zigzag_hard_config_top.webp" width="400"> |
+| IK config 1 | <img src="lira/videos/dual_pusht_zigzag_front.webp" width="400"> | <img src="lira/videos/dual_pusht_zigzag_top.webp" width="400"> |
+| IK config 2 | <img src="lira/videos/dual_pusht_zigzag_hard_config_front.webp" width="400"> | <img src="lira/videos/dual_pusht_zigzag_hard_config_top.webp" width="400"> |
 
 To make it harder, we cross the targets: each arm plays the other arm's board, so the iiwa14 pushes the
 blue T and the UR5e the red one, and the arms reach across each other the whole time they push. In this
 setup the planner doesn't actually find a collision-free path. The CBF still keeps the arms apart, and
 the policies fix the rest themselves.
 
-The bottom row is a harder start configuration, which also succeeds. This doesn't always work: sometimes
-the arms get stuck in a local minimum, and a replan strategy is needed to get them out.
+IK config 2 is harder, and it also succeeds.
+
+Not every zig-zag run finishes: sometimes the arms get stuck in a local minimum. What LiRA provides is
+safety, so the arms stay apart even while they are stuck. Getting them out is left to what you build on
+top, such as a replan strategy or a different policy.
