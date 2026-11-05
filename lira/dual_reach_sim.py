@@ -13,7 +13,7 @@ right now (no velocity, no plan) and keeps its own share of every clearance betw
 dodge it too (--no-obstacle parks it).
 
   plan     once per arm, before the loop: IK candidates + SQP or gradient descent (--planner)
-  follow   every tick, each arm: PathVelocityField -> SafetyFilter(others=the other arm, obstacle) -> servos
+  follow   every tick, each arm: PathVelocityField -> SafetyFilter(others=the other arm, the other T, obstacle) -> servos
 
 Run from this directory:  .venv/bin/python dual_reach_sim.py [--seed N] [--no-obstacle] [--record out.mp4]
 """
@@ -31,16 +31,15 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
-from common import PLANNERS, make_planner, print_field, print_plan, resolve_seed
+from common import PLANNERS, make_field, make_planner, print_field, print_plan, resolve_seed
 from core.geometry import capsule_capsule_distance_batch
-from core.path_field import PathVelocityField
 from core.planner import plan_trajectory
 from mj.arm import Arm
 from mj.model import load_dual_model
 from mj.recorder import Recorder
 from mj.robots import ROBOTS
 from mj.safety import CBFConfig, SafetyFilter
-from mj.scene import MovingObstacle
+from mj.scene import EnvironmentGeometry, MovingObstacle
 from mj.tasks import flange_pose_ds
 from mj.utils import draw_capsules
 from reach_sim import IK_DAMPING, MAX_SPEED, hover_target
@@ -84,30 +83,41 @@ class DualArm:
         # the arm's model has one T (t_block): it stands in for the T this arm reaches for
         self.block_qpos = model.jnt_qposadr[model.body("t_block").jntadr[0]]
         self.dual_block_qpos = dual_model.jnt_qposadr[dual_model.body(target_block).jntadr[0]]
+        # every other T, which the arm's model doesn't have: its boxes in world frame (both models share
+        # it) from the two-arm sim, refreshed by sync -- the plan and the CBF keep clear of them
+        names = [dual_model.body(b).name for b in range(dual_model.nbody)]
+        self.other_blocks = [EnvironmentGeometry(dual_model, object_body_name=name) for name in names
+                             if name.startswith("t_block") and name != target_block]
+        self.other_boxes = []
         self.field = None
 
     def sync(self, dual_data):
-        """The arm's model to the two-arm sim's state: its joints and its target T."""
+        """The arm's model to the two-arm sim's state: the time, its joints and its target T; and where
+        the other Ts are."""
         data = self.arm.data
+        data.time = dual_data.time
         data.qpos[:self.arm.nu] = dual_data.qpos[self.qpos_idx]
         data.qvel[:self.arm.nu] = dual_data.qvel[self.dof_idx]
         data.qpos[self.block_qpos:self.block_qpos + 7] = dual_data.qpos[self.dual_block_qpos:self.dual_block_qpos + 7]
         mujoco.mj_forward(self.arm.model, data)
+        self.other_boxes = [box for block in self.other_blocks for box in block.update(dual_data)]
 
     def plan(self, planner, kind, rng):
+        """This arm's own plan to hover over its T, blind to the other arm (None: no IK goal), and a field
+        along it."""
         arm = self.arm
         print(f"Planning {self.name}: q = 0 -> over {self.target_block}...")
         t0 = time.perf_counter()
         plan = plan_trajectory(arm.model, arm.data, arm.geometry, arm.env, arm.q, *hover_target(arm),
-                               planner=planner, parallel=True, rng=rng)
+                               planner=planner, parallel=True, rng=rng, boxes=self.other_boxes)
         print(f"  took {time.perf_counter() - t0:.3f}s")
         if plan is None:
             print(f"  WARNING: no IK candidate converged -- {self.name} falls back to the straight-line DS")
-            return
+            return None
         print_plan(plan, planner, kind)
-        self.field = PathVelocityField(plan["best"]["path"], k_tangent=arm.robot.path_k_tangent,
-                                       k_corrective=arm.robot.path_k_corrective)
+        self.field = make_field(plan, arm.robot)
         print_field(self.field)
+        return plan
 
     def nominal(self):
         if self.field is not None:
@@ -148,7 +158,7 @@ def control(arms, data, obstacle=None):
     caps = [dual_arm.arm.geometry.world(dual_arm.arm.data) for dual_arm in arms]
     for dual_arm, own, other in zip(arms, caps, caps[::-1]):
         data.ctrl[dual_arm.ctrl_idx] = dual_arm.safety.filter(dual_arm.nominal(), caps=own, others=other["env"],
-                                                              obstacle=obstacle)
+                                                              boxes=dual_arm.other_boxes, obstacle=obstacle)
     return [c["env"] for c in caps]
 
 

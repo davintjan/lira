@@ -228,16 +228,17 @@ def _wrap_near(q, reference, lo, hi):
 
 
 def solve_ik_candidates(sandbox, target_pos, target_quat, model, q_current,
-                        n_random_seeds=8, dedupe_tol=0.15, rng=None):
+                        n_random_seeds=8, dedupe_tol=0.15, rng=None, known=()):
     """Multi-start numerical IK: q_current plus random seeds, keep every seed that converges,
     dedupe near-identical solutions (same kinematic branch). Each result is wrapped near
-    q_current first (see _wrap_near)."""
+    q_current first (see _wrap_near). known: solutions found already (an earlier call) -- only new
+    ones are returned."""
     rng = rng or np.random.default_rng()
     lo, hi = joint_limits(model)
     q_current = np.array(q_current, dtype=float)
     seeds = [q_current] + [rng.uniform(lo, hi) for _ in range(n_random_seeds)]
 
-    candidates = []
+    candidates = list(known)
     for seed in seeds:
         q, ok = numeric_ik(sandbox, target_pos, target_quat, seed, model)
         if not ok:
@@ -246,7 +247,7 @@ def solve_ik_candidates(sandbox, target_pos, target_quat, model, q_current,
         if any(np.max(np.abs(q - c)) < dedupe_tol for c in candidates):
             continue
         candidates.append(q)
-    return candidates
+    return candidates[len(known):]
 
 
 # Per-process globals, set once by _init_worker after the pool forks -- each
@@ -272,10 +273,15 @@ def _optimize_worker(args):
 
 
 def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat,
-                    planner=None, n_random_seeds=8, parallel=False, n_workers=None, rng=None):
+                    planner=None, n_random_seeds=8, ik_rounds=4, parallel=False, n_workers=None, rng=None,
+                    boxes=()):
     """Full pipeline: multi-seed IK for candidate goals, CHOMP-optimize a path to each, pick
     the winner by total path cost (not isolated endpoint quality). Returns None if no seed
     converged, else {'best': ..., 'all_candidates': ...}.
+
+    ik_rounds: up to this many rounds of n_random_seeds IK seeds, stopping at the first that finds a
+    goal clear of collisions. One round's seeds can all land on colliding branches (e.g. every one
+    elbow-down, through the table) while a clear branch exists.
 
     parallel: if True, each surviving candidate's optimize() call runs in its own worker
     process. Workers are forked, so they inherit this exact model -- including anything added
@@ -285,23 +291,30 @@ def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat
     each other, so this only changes wall-clock time, not the result.
 
     rng: numpy Generator for the random IK seeds -- the only randomness in planning, so a seeded
-    one makes the whole plan reproducible. None: a fresh unseeded one each call."""
+    one makes the whole plan reproducible. None: a fresh unseeded one each call.
+
+    boxes: more boxes (center, rot, half_extents) to keep clear of besides env's block, where they are
+    now -- e.g. another arm's T."""
     planner = planner or TrajectoryPlanner()
     sandbox = KinematicsSandbox(model, geometry)
-    object_boxes = env.update(data)  # block doesn't move during planning -- one snapshot suffices
+    object_boxes = env.update(data) + list(boxes)  # blocks don't move during planning -- one snapshot suffices
     table_height = env.table_height
-
-    candidates = solve_ik_candidates(sandbox, target_pos, target_quat, model, q_start,
-                                     n_random_seeds=n_random_seeds, rng=rng)
-    if not candidates:
-        return None
 
     # a goal that itself collides (e.g. an IK branch with the elbow through the table) can't
     # have a clear path -- the endpoint is fixed -- so don't spend optimize() on it. If every
-    # goal collides, keep them all so the least-bad path still wins.
-    clear_goals = [q for q in candidates
-                   if planner._deepest_intrusion(planner._collision_rows(q, sandbox, object_boxes, table_height))
-                   <= planner.feasibility_eps]
+    # goal collides after ik_rounds, keep them all so the least-bad path still wins.
+    candidates, clear_goals = [], []
+    for _ in range(ik_rounds):
+        found = solve_ik_candidates(sandbox, target_pos, target_quat, model, q_start,
+                                    n_random_seeds=n_random_seeds, rng=rng, known=candidates)
+        candidates += found
+        clear_goals += [q for q in found
+                        if planner._deepest_intrusion(planner._collision_rows(q, sandbox, object_boxes, table_height))
+                        <= planner.feasibility_eps]
+        if clear_goals:
+            break
+    if not candidates:
+        return None
     candidates = clear_goals or candidates
 
     if parallel and len(candidates) > 1:

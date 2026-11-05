@@ -1,6 +1,7 @@
-"""Setup both sims share: the seed, the planner, and the startup report."""
+"""Setup both sims share: the seed, the planner, the path field, and the startup report."""
 import numpy as np
 
+from core.path_field import PathVelocityField
 from core.planner import TrajectoryPlanner
 from core.planner_sqp import SQPTrajectoryPlanner
 from mj.robots import DEFAULT_ROBOT, ROBOTS
@@ -30,6 +31,11 @@ def make_planner(kind, cbf_margin):
     lets the arm reach, and it stalls just short of the goal."""
     planner_cls = PLANNERS[kind]
     return planner_cls(margin=cbf_margin + 2 * planner_cls().feasibility_eps)
+
+
+def make_field(plan, robot):
+    """The velocity field following plan's best path, with the robot's gains."""
+    return PathVelocityField(plan["best"]["path"], k_tangent=robot.path_k_tangent, k_corrective=robot.path_k_corrective)
 
 
 def print_plan(plan, planner, kind):

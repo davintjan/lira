@@ -22,8 +22,7 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
-from common import add_common_args, make_planner, print_field, print_plan, resolve_seed
-from core.path_field import PathVelocityField
+from common import add_common_args, make_field, make_planner, print_field, print_plan, resolve_seed
 from core.planner import plan_trajectory
 from mj.arm import Arm
 from mj.model import TOOL_DOWN_QUAT
@@ -104,8 +103,7 @@ def main(argv=None):
         field = None
     else:
         print_plan(plan, planner, args.planner)
-        field = PathVelocityField(plan["best"]["path"], k_tangent=robot.path_k_tangent,
-                                  k_corrective=robot.path_k_corrective)
+        field = make_field(plan, robot)
         print_field(field)
 
     center, where = obstacle_center(arm, plan)

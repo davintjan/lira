@@ -2,7 +2,7 @@
 Push-T sim: the diffusion policy trained in the 2-D Push-T simulator (../diffusion_policy) drives the
 arm's pusher rod on the MuJoCo table.
 
-Phases (one state machine in main):
+Phases (PushTTask, one control tick at a time -- dual_pusht_sim.py runs two):
   reach    SQP plan + PathVelocityField, as in reach_sim: the probe goes to HOVER_HEIGHT above a
            pre-push spot next to the T -- clear of it, so coming down can't land on it
   descend  the probe goes straight down to PUSH_HEIGHT
@@ -10,8 +10,10 @@ Phases (one state machine in main):
            8 target positions, used one per 0.1 s; every tick a Cartesian DS drives the probe toward
            the current target, through the CBF (the rod may touch the T, nothing else may). The policy
            runs in a background thread, so the sim keeps going while it thinks (pusht.policy.ChunkedPolicy)
-  done     the T covers SUCCESS_COVERAGE of the goal (Push-T's success rule) or PUSH_TIME_LIMIT
-           passes; the probe holds still, and on success the obstacle stops where it is
+  lift     the T covers SUCCESS_COVERAGE of the goal (Push-T's success rule) or PUSH_TIME_LIMIT
+           passes; on success the obstacle stops where it is. The probe rises straight up to
+           RETREAT_HEIGHT above the T's top face -- the rod may still touch the T, but never pushes it
+  hover    the probe glides over the T's centre of mass and holds there, following the T if it moves
 
 The policy only ever sees Push-T pixels: PushTFrame maps the table to the Push-T workspace at
 1 px = 1 mm, axes aligned, with Push-T's fixed goal pose on world.xml's goal body.
@@ -33,8 +35,7 @@ import mujoco.viewer
 import numpy as np
 import torch
 
-from common import add_common_args, make_planner, resolve_seed
-from core.path_field import PathVelocityField
+from common import add_common_args, make_field, make_planner, resolve_seed
 from core.planner import plan_trajectory
 from mj.arm import Arm
 from mj.model import TOOL_DOWN_QUAT
@@ -57,6 +58,8 @@ PREPUSH_MARGIN_PX = 20   # px: the pre-push spot stays this far inside the Push-
 REACH_TOL = 0.02         # rad: the reach phase is done once the arm is this close to the planned path's end...
 REACH_PROBE_TOL = 0.03   # m: ...or the probe this close to the hover point (the descend DS takes care of the rest)
 DESCEND_TOL = 0.005      # m: at push height once the probe is this close
+RETREAT_HEIGHT = 0.10    # m: once pushing is over, the probe hovers this far above the T's top face
+LIFT_TOL = 0.01          # m: lifted once the probe is this close to RETREAT_HEIGHT straight above where it stopped
 
 PROBE_GAIN = 10.0        # 1/s: Push-T's pusher PD (k_p 100, k_v 20) is critically damped with time constant 0.1 s
 PROBE_MAX_SPEED = 0.3    # m/s
@@ -95,12 +98,135 @@ def park_obstacle(arm):
     arm.data.mocap_pos[arm.model.body_mocapid[arm.model.body("obstacle").id]] = [-0.5, 0.0, 1.0]  # behind the robot
 
 
+def above_block(arm):
+    """RETREAT_HEIGHT above the T's top face, over its centre of mass: where the probe hovers once pushing is over."""
+    top = max(box["center"][2] + box["half_extents"][2] for box in arm.env.update(arm.data))  # the T stands upright
+    return np.append(arm.data.body("t_block").xipos[:2], top + RETREAT_HEIGHT)
+
+
+def lift_point(arm):
+    """Straight above the probe, as high as above_block: where the lift phase takes it."""
+    return np.append(arm.probe_pos()[:2], above_block(arm)[2])
+
+
 def draw_targets(scn, frame, current_px, queued_px):
     """The policy's current target (larger) and its queued ones as spheres at push height."""
     if current_px is not None:
         draw_sphere(scn, np.append(frame.to_table(current_px), PUSH_HEIGHT), 0.008, (0.1, 0.4, 1.0, 0.9))
     for px in queued_px:
         draw_sphere(scn, np.append(frame.to_table(px), PUSH_HEIGHT), 0.004, (0.1, 0.4, 1.0, 0.5))
+
+
+class PushTTask:
+    """One arm playing Push-T: the phases above, one control tick at a time. The caller syncs the arm's
+    model before each control() and sends its joint velocity to the servos -- main below for one arm,
+    dual_pusht_sim.py for two.
+
+    prepush_spot(data) -> table xy to start pushing from, next to the T where it is in data
+    hover_spot(data) -> table xy to hover over before descending to the pre-push spot; None: right over it
+    note(so_far) -> text for the end of the push log lines, e.g. the obstacle monitor's summary"""
+
+    def __init__(self, arm, safety, frame, policy, prepush_spot, name=None, note=None, hover_spot=None):
+        self.arm, self.safety, self.frame, self.policy = arm, safety, frame, policy
+        self.prepush_spot, self.hover_spot, self.name = prepush_spot, hover_spot, name
+        self.note = note or (lambda so_far: "")
+        self.phase, self.field, self.path_end = None, None, None
+        self.next_policy_time, self.push_start, self.lift_to = 0.0, None, None
+        self.succeeded = False
+
+    @property
+    def finished(self):
+        """Pushing is over: success or the time limit."""
+        return self.phase in ("lift", "hover")
+
+    def log(self, now, message):
+        print(f"[{now:6.2f}s] " + (f"{self.name:6s} " if self.name else "") + message)
+
+    def plan(self, planner, rng, boxes=()):
+        """Reach: plan to hover above the pre-push spot next to the T (or over hover_spot), rod pointing
+        straight down, and follow that path. boxes: more to keep clear of, as SafetyFilter.filter's -- e.g. another arm's T. Returns
+        plan_trajectory's plan; None if there's no IK goal, and then it descends with the Cartesian DS."""
+        arm, frame = self.arm, self.frame
+        who = f"{self.name}: " if self.name else ""
+        block_px, block_angle = frame.block_pose_px(arm.data)
+        print(f"{who}T start (Push-T px) {np.round(block_px, 1).tolist()}, {np.degrees(block_angle):.1f} deg; "
+              f"goal covered {frame.coverage(arm.data) * 100:.1f}%")
+        spot = self.prepush_spot(arm.data)
+        hover_xy = spot if self.hover_spot is None else self.hover_spot(arm.data)
+        self.hover_point = np.append(hover_xy, PUSH_HEIGHT + HOVER_HEIGHT)
+        self.push_start_point = np.append(spot, PUSH_HEIGHT)
+        self.hover_flange = self.hover_point + arm.pusher.flange_above_probe
+        t0 = time.perf_counter()
+        plan = plan_trajectory(arm.model, arm.data, arm.geometry, arm.env, arm.q, self.hover_flange, TOOL_DOWN_QUAT,
+                               planner=planner, rng=rng, boxes=boxes)
+        print(f"{who}pre-push spot {np.round(frame.to_px(spot), 1).tolist()} px"
+              + ("" if self.hover_spot is None else f", hovering over {np.round(frame.to_px(hover_xy), 1).tolist()} px")
+              + f", planned in {time.perf_counter() - t0:.3f}s")
+        if plan is None:
+            print(f"{who}WARNING: no IK candidate converged -- descending with the Cartesian DS")
+            self.phase = "descend"
+            return None
+        self.field, self.path_end, self.phase = make_field(plan, arm.robot), plan["best"]["path"][-1], "reach"
+        return plan
+
+    def _probe_cmd(self, target, touch_block, caps, others, boxes, obstacle):
+        """One tick of the probe DS toward target, through the CBF."""
+        arm = self.arm
+        u_des, metric = probe_ds(arm, target, PROBE_GAIN, PROBE_MAX_SPEED, arm.robot.k_o, IK_DAMPING, TASK_METRIC_REG)
+        return self.safety.filter(u_des, caps=caps, others=others, boxes=boxes, obstacle=obstacle, metric=metric,
+                                  touch_block=touch_block)
+
+    def _finish(self, now):
+        """Pushing is over -- success, or out of time: lift."""
+        coverage = self.frame.coverage(self.arm.data)
+        self.succeeded = coverage >= SUCCESS_COVERAGE
+        self.phase, self.lift_to = "lift", lift_point(self.arm)
+        self.policy.stop()
+        self.log(now, f"{'SUCCESS' if self.succeeded else 'time limit'}: goal covered {coverage * 100:.1f}% after "
+                      f"{now - self.push_start:.1f}s of pushing{self.note(False)}")
+
+    def control(self, now, caps, obstacle=None, others=None, boxes=()):
+        """This control tick's joint velocity. caps: the arm's RobotGeometry.world this tick; obstacle:
+        the obstacle's capsule this tick, or None; others, boxes: another arm's capsules and T, if any
+        (all as SafetyFilter.filter's)."""
+        arm, frame, policy = self.arm, self.frame, self.policy
+        if self.phase == "push" and now >= self.next_policy_time:  # Push-T's 10 Hz tick
+            self.next_policy_time += POLICY_DT
+            coverage = frame.coverage(arm.data)
+            if coverage >= SUCCESS_COVERAGE or now - self.push_start >= PUSH_TIME_LIMIT:
+                self._finish(now)
+            else:
+                policy.observe(frame.observation(arm.data))
+                late = policy.collect(now)
+                if late is not None:
+                    self.log(now, f"goal covered {coverage * 100:5.1f}% | new action chunk, {late} tick(s) late, "
+                                  f"{len(policy.queue)} actions left{self.note(True)}")
+                policy.next_target(now)
+
+        if self.phase == "reach":
+            u = self.safety.filter(self.field(arm.q), caps=caps, others=others, boxes=boxes, obstacle=obstacle)
+            if (np.linalg.norm(arm.q - self.path_end) < REACH_TOL
+                    or np.linalg.norm(arm.probe_pos() - self.hover_point) < REACH_PROBE_TOL):
+                self.phase = "descend"
+                self.log(now, "reached the hover point -- descending")
+            return u
+        if self.phase == "descend":
+            u = self._probe_cmd(self.push_start_point, False, caps, others, boxes, obstacle)
+            if np.linalg.norm(arm.probe_pos() - self.push_start_point) < DESCEND_TOL:
+                self.phase, self.push_start, self.next_policy_time = "push", now, now
+                self.log(now, "at push height -- policy takes over")
+            return u
+        if self.phase == "push":  # toward the policy's current target; until the first lands, hold the start point
+            target = (self.push_start_point if policy.target is None
+                      else np.append(frame.to_table(policy.target), PUSH_HEIGHT))
+            return self._probe_cmd(target, True, caps, others, boxes, obstacle)
+        if self.phase == "lift":  # straight up: the rod may still touch the T, but rising never pushes it
+            u = self._probe_cmd(self.lift_to, True, caps, others, boxes, obstacle)
+            if np.linalg.norm(arm.probe_pos() - self.lift_to) < LIFT_TOL:
+                self.phase = "hover"
+                self.log(now, f"lifted -- hovering {RETREAT_HEIGHT * 100:.0f} cm above the T")
+            return u
+        return self._probe_cmd(above_block(arm), False, caps, others, boxes, obstacle)  # hover: over the T, wherever it is now
 
 
 def main(argv=None):
@@ -121,29 +247,6 @@ def main(argv=None):
     print(f"Robot: {robot.name}. Loading policy {args.checkpoint.name} on {DEVICE}...")
     policy = ChunkedPolicy(load_policy(args.checkpoint, DEVICE), DEVICE, period=POLICY_DT, prefetch=PREFETCH_ACTIONS)
 
-    block_px, block_angle = frame.block_pose_px(arm.data)
-    print(f"T start (Push-T px): pos {np.round(block_px, 1).tolist()}, angle {np.degrees(block_angle):.1f} deg; "
-          f"goal covered {frame.coverage(arm.data) * 100:.1f}%")
-
-    # reach: plan to hover above the pre-push spot, rod pointing straight down
-    spot = frame.prepush_spot(arm.data, PREPUSH_DISTANCE, PREPUSH_MARGIN_PX)
-    print(f"Pre-push spot: table {np.round(spot, 3).tolist()} m = {np.round(frame.to_px(spot), 1).tolist()} px")
-    hover_point = np.append(spot, PUSH_HEIGHT + HOVER_HEIGHT)
-    push_start_point = np.append(spot, PUSH_HEIGHT)
-    planner = make_planner(args.planner, CBF.margin)
-    t0 = time.perf_counter()
-    plan = plan_trajectory(arm.model, arm.data, arm.geometry, arm.env, arm.q,
-                           hover_point + arm.pusher.flange_above_probe, TOOL_DOWN_QUAT,
-                           planner=planner, rng=np.random.default_rng(seed))
-    print(f"Planning took {time.perf_counter() - t0:.3f}s")
-    if plan is None:
-        print("WARNING: no IK candidate converged -- skipping the reach phase, descending with the Cartesian DS")
-        field, path_end, phase = None, None, "descend"
-    else:
-        path = plan["best"]["path"]
-        field = PathVelocityField(path, k_tangent=robot.path_k_tangent, k_corrective=robot.path_k_corrective)
-        path_end, phase = path[-1], "reach"
-
     if args.no_obstacle:
         obstacle, monitor = None, None
         park_obstacle(arm)
@@ -153,17 +256,15 @@ def main(argv=None):
     def obstacle_note(so_far):
         return f" | {monitor.summary(so_far)}" if monitor else ""
 
-    def probe_to(target, touch_block, obstacle_now, caps):
-        """One tick of the probe DS through the safety filter."""
-        u_des, metric = probe_ds(arm, target, PROBE_GAIN, PROBE_MAX_SPEED, robot.k_o, IK_DAMPING, TASK_METRIC_REG)
-        arm.command(safety.filter(u_des, caps=caps, obstacle=obstacle_now, metric=metric, touch_block=touch_block))
+    dt = arm.model.opt.timestep
+    task = PushTTask(arm, safety, frame, policy, note=obstacle_note,
+                     prepush_spot=lambda data: frame.prepush_spot(data, PREPUSH_DISTANCE, PREPUSH_MARGIN_PX))
+    task.plan(make_planner(args.planner, CBF.margin), np.random.default_rng(seed))
 
     def draw_overlays(scn):
         """The policy's targets, while it's pushing."""
-        draw_targets(scn, frame, policy.target if phase == "push" else None, policy.queue)
+        draw_targets(scn, frame, policy.target if task.phase == "push" else None, policy.queue)
 
-    dt = arm.model.opt.timestep
-    next_policy_time, push_start, hold_point = 0.0, None, None
     recording = Recorder(arm.model, args.record) if args.record else contextlib.nullcontext()
     with mujoco.viewer.launch_passive(arm.model, arm.data) as viewer, recording as recorder:
         while viewer.is_running():
@@ -173,46 +274,9 @@ def main(argv=None):
             caps = arm.geometry.world(arm.data)  # every capsule in world frame, once per tick
             if obstacle_now is not None and monitor.update(arm.data, caps["env"], obstacle_now):
                 print(f"[{now:6.2f}s] WARNING: the obstacle hit the robot")
-
-            if phase == "push" and now >= next_policy_time:  # Push-T's 10 Hz tick
-                next_policy_time += POLICY_DT
-                coverage = frame.coverage(arm.data)
-                if coverage >= SUCCESS_COVERAGE or now - push_start >= PUSH_TIME_LIMIT:
-                    phase, hold_point = "done", arm.probe_pos()
-                    policy.stop()
-                    verdict = "SUCCESS" if coverage >= SUCCESS_COVERAGE else "time limit"
-                    if coverage >= SUCCESS_COVERAGE and obstacle is not None:
-                        obstacle.freeze(arm.data)  # task done: the obstacle stops where it is
-                    print(f"[{now:6.2f}s] {verdict}: goal covered {coverage * 100:.1f}% after "
-                          f"{now - push_start:.1f}s of pushing{obstacle_note(so_far=False)}")
-                else:
-                    policy.observe(frame.observation(arm.data))
-                    late = policy.collect(now)
-                    if late is not None:
-                        print(f"[{now:6.2f}s] goal covered {coverage * 100:5.1f}% | new action chunk, "
-                              f"{late} tick(s) late, {len(policy.queue)} actions left{obstacle_note(so_far=True)}")
-                    policy.next_target(now)
-
-            if phase == "reach":
-                arm.command(safety.filter(field(arm.q), caps=caps, obstacle=obstacle_now))
-                if (np.linalg.norm(arm.q - path_end) < REACH_TOL
-                        or np.linalg.norm(arm.probe_pos() - hover_point) < REACH_PROBE_TOL):
-                    phase = "descend"
-                    print(f"[{now:6.2f}s] reached the hover point -- descending")
-
-            elif phase == "descend":
-                probe_to(push_start_point, False, obstacle_now, caps)
-                if np.linalg.norm(arm.probe_pos() - push_start_point) < DESCEND_TOL:
-                    phase, push_start, next_policy_time = "push", now, now
-                    print(f"[{now:6.2f}s] at push height -- policy takes over")
-
-            elif phase == "push":  # toward the policy's current target; until the first lands, hold the start point
-                target = push_start_point if policy.target is None else np.append(frame.to_table(policy.target), PUSH_HEIGHT)
-                probe_to(target, True, obstacle_now, caps)
-
-            else:  # done: hold still where the probe stopped
-                probe_to(hold_point, True, obstacle_now, caps)
-
+            arm.command(task.control(now, caps, obstacle_now))
+            if task.succeeded and obstacle is not None:
+                obstacle.freeze(arm.data)  # task done: the obstacle stops where it is
             arm.step()
             viewer.user_scn.ngeom = 0
             draw_overlays(viewer.user_scn)
