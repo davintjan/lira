@@ -2,19 +2,19 @@
 The policy only ever sees Push-T pixels; this is the one place that knows how the table maps to them."""
 import numpy as np
 
-# Push-T's 9 block keypoints in the T's local frame (px), as PushTKeypointsEnv.genenerate_keypoint_manager_params()
-# makes them: farthest-point samples of the rendered T with seed 0, so always these same values. Generated in
-# ../diffusion_policy's venv (needs pygame/pymunk); the observation they produce matched that env's exactly.
-LOCAL_KEYPOINTS = np.array([
-    [9.269787, 90.040974], [-60.983472, -1.18673], [60.912756, -1.393364],
-    [-0.270503, 25.543625], [-14.064928, 122.815854], [39.002739, 32.857404],
-    [-39.966414, 32.729655], [-16.824344, 62.863179], [23.541461, -1.700288],
-])
 # the T's two rectangles in its local frame (px), counter-clockwise -- pusht_env.add_tee with scale 30
 T_RECTS_LOCAL = [
     np.array([[-60.0, 0.0], [60.0, 0.0], [60.0, 30.0], [-60.0, 30.0]]),     # bar
     np.array([[-15.0, 30.0], [15.0, 30.0], [15.0, 120.0], [-15.0, 120.0]]),  # stem
 ]
+
+# 9 keypoints fixed on the T object
+LOCAL_KEYPOINTS = np.array([
+    [9.269787, 90.040974], [-60.983472, -1.18673], [60.912756, -1.393364],
+    [-0.270503, 25.543625], [-14.064928, 122.815854], [39.002739, 32.857404],
+    [-39.966414, 32.729655], [-16.824344, 62.863179], [23.541461, -1.700288],
+])
+
 T_AREA_PX = 120 * 30 + 30 * 90
 
 

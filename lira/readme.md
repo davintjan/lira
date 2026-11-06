@@ -6,8 +6,10 @@ table, objects and moving obstacles.
 
 ```
 core/      the robot-agnostic math: numpy, osqp, scipy
-  planner.py       trajectory planner (gradient descent) + IK candidates + plan_trajectory
-  planner_sqp.py   the same planner as trust-region SQP
+  planner.py       what every path planner shares (cost, scoring) + plan_trajectory
+  planner_gd.py    the planner as gradient descent
+  planner_sqp.py   the planner as trust-region SQP
+  ik.py            numerical IK: one seed, or many for every branch; joint limits
   path_field.py    planned path -> stable velocity field (energy = path left + off-path penalty)
   ds.py            reactive DS (position, orientation) and damped-least-squares IK
   cbf.py           the CBF-QP safety filter
@@ -20,6 +22,7 @@ mj/        MuJoCo glue
   tasks.py         nominal controllers: flange pose DS, probe DS
   scene.py         robot/environment capsules from the model, moving obstacle
   mj_interface.py  poses, Jacobians, differential IK
+  sandbox.py       KinematicsSandbox: an arm's kinematics at any q, for planning and IK
   utils.py         viewer overlays (draw_capsules: what the planner and CBF see)
 pusht/     Push-T glue
   frame.py         table <-> Push-T pixels, observation, coverage, pre-push spot
@@ -35,8 +38,8 @@ dual_pusht_sim.py  two arms, each playing Push-T with its own policy copy; --zig
 pusht_sim.py       the arm plays the Push-T diffusion policy
 ```
 
-(core/planner.py still uses MuJoCo for kinematics through mj/. The joint count comes from the model,
-so core/ works for any arm MuJoCo can load.)
+(core/planner.py still gets its kinematics from MuJoCo, through mj/sandbox.py. The joint count comes
+from the model, so core/ works for any arm MuJoCo can load.)
 
 Adding a robot: put its menagerie folder in `scenes/generate_vendor_links.py`'s `ROBOTS` (and in the
 submodule's sparse checkout), write `scenes/scene_<robot>.xml` like the others, and add an entry to

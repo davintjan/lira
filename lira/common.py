@@ -2,11 +2,11 @@
 import numpy as np
 
 from core.path_field import PathVelocityField
-from core.planner import TrajectoryPlanner
+from core.planner_gd import GDTrajectoryPlanner
 from core.planner_sqp import SQPTrajectoryPlanner
 from mj.robots import DEFAULT_ROBOT, ROBOTS
 
-PLANNERS = {"gd": TrajectoryPlanner, "sqp": SQPTrajectoryPlanner}  # gradient descent / SQP with collision as a constraint
+PLANNERS = {"gd": GDTrajectoryPlanner, "sqp": SQPTrajectoryPlanner}  # gradient descent / SQP with collision as a constraint
 
 
 def add_common_args(parser):

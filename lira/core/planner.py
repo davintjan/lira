@@ -1,73 +1,29 @@
 """
-Offline motion planning. KinematicsSandbox evaluates kinematics at an
-arbitrary q. TrajectoryPlanner (CHOMP-style) plans a joint-space path and
-scores it by total path cost, not just endpoint quality. plan_trajectory
-ties it together: try every IK candidate, keep the cheapest feasible path.
-Runs once before the control loop starts, not every tick.
+Offline motion planning. TrajectoryPlanner is what every path planner shares: the cost of a joint-space
+path -- smoothness, collision, a manipulability hinge -- and its score (path_cost), total path cost, not
+just endpoint quality. Its subclasses find the path: planner_gd.GDTrajectoryPlanner by gradient
+descent, planner_sqp.SQPTrajectoryPlanner by SQP. plan_trajectory ties it together: IK candidates
+(core.ik), a path to each, keep the cheapest feasible one. Kinematics come from a KinematicsSandbox
+(mj/sandbox.py). Runs once before the control loop starts, not every tick.
 """
 import multiprocessing as mp
 import os
 
-import mujoco
 import numpy as np
 
-from core.ds import damped_least_squares, orientation_ds
 from core.geometry import clearance_rows, manipulability
-# aliased so KinematicsSandbox's same-named methods below don't look recursive
-from mj.mj_interface import site_jacobian as _mj_site_jacobian, point_jacobian as _mj_point_jacobian
-
-
-class KinematicsSandbox:
-    """Evaluates arm kinematics at an arbitrary q via a scratch MjData, without touching the live sim.
-    Call set_q(q) before any accessor."""
-
-    def __init__(self, model, geometry):
-        self.model = model
-        self.data = mujoco.MjData(model)
-        self.geometry = geometry
-        self._site_id = model.site("attachment_site").id
-
-    def set_q(self, q):
-        self.data.qpos[:len(q)] = q  # the arm's joints come first in qpos
-        mujoco.mj_kinematics(self.model, self.data)
-        mujoco.mj_comPos(self.model, self.data)
-
-    def ee_pos(self):
-        return self.data.site(self._site_id).xpos.copy()
-
-    def ee_quat(self):
-        quat = np.zeros(4)
-        mujoco.mju_mat2Quat(quat, self.data.site(self._site_id).xmat)
-        return quat
-
-    def ee_jacobian_full(self):
-        return _mj_site_jacobian(self.model, self.data)
-
-    def point_jacobian(self, body_id, point):
-        return _mj_point_jacobian(self.model, self.data, body_id, point)
-
-    def self_capsules(self):
-        return self.geometry.update(self.data)
-
-    def env_capsules(self):
-        return self.geometry.update_all(self.data)
-
-    def link_pairs(self):
-        return self.geometry.link_pairs_world(self.data)
+from core.ik import solve_ik_candidates
+from mj.sandbox import KinematicsSandbox
 
 
 class TrajectoryPlanner:
-    """CHOMP-style joint-space path optimizer: gradient descent against smoothness + collision
-    (self/table/object) + a manipulability hinge, integrated over the whole path so IK candidates
-    are compared by total path cost, not endpoint quality alone."""
+    """A joint-space path's cost and score, the same for every planner, so plan_trajectory ranks
+    candidates from either the same way. Subclasses implement optimize(q_start, q_goal, sandbox,
+    object_boxes, table_height) -> (path, path_cost breakdown)."""
 
-    def __init__(self, n_waypoints=12, iters=60, tol=1e-4, lr=0.02, margin=0.03, table_margin=0.005,
-                 manip_thresh=0.01, w_smooth=1.0, w_collision=50.0, w_singularity=20.0,
-                 feasibility_eps=0.002, feasibility_penalty=1000.0):
+    def __init__(self, n_waypoints=12, margin=0.03, table_margin=0.005, manip_thresh=0.01, w_smooth=1.0,
+                 w_collision=50.0, w_singularity=20.0, feasibility_eps=0.002, feasibility_penalty=1000.0):
         self.n_waypoints = n_waypoints
-        self.iters = iters  # max passes over the path
-        self.tol = tol      # rad: stop early once no joint of any waypoint moves more than this in a pass
-        self.lr = lr
         self.margin = margin
         self.table_margin = table_margin
         self.manip_thresh = manip_thresh
@@ -79,6 +35,9 @@ class TrajectoryPlanner:
         # path from beating a genuinely clear one (see _deepest_intrusion).
         self.feasibility_eps = feasibility_eps
         self.feasibility_penalty = feasibility_penalty
+
+    def optimize(self, q_start, q_goal, sandbox, object_boxes, table_height):
+        raise NotImplementedError
 
     def _collision_rows(self, q, sandbox, object_boxes, table_height, activation=0.0):
         """(h, dh/dq) for every hazard within `activation` m of its margin at q -- see
@@ -101,8 +60,8 @@ class TrajectoryPlanner:
 
     def _waypoint_collision_singularity_cost_grad(self, q, sandbox, object_boxes, table_height):
         """Collision + manipulability-hinge cost/gradient at one waypoint (smoothness is handled
-        separately in optimize()). Returns (collision_cost, singularity_cost, grad, intrusion_depth),
-        see _deepest_intrusion for the last."""
+        separately). Returns (collision_cost, singularity_cost, grad, intrusion_depth), see
+        _deepest_intrusion for the last."""
         rows = self._collision_rows(q, sandbox, object_boxes, table_height)
         collision_cost = 0.0
         grad = np.zeros(len(q))
@@ -164,91 +123,6 @@ class TrajectoryPlanner:
         return dict(smooth=smooth, collision=collision, singularity=singularity, intrusion_depth=intrusion_depth,
                     feasibility_penalty=penalty, total=smooth + collision + singularity + penalty)
 
-    def optimize(self, q_start, q_goal, sandbox, object_boxes, table_height):
-        """Gradient-descends the interior waypoints of a straight-line seed (endpoints fixed), for up
-        to `iters` passes -- fewer once a pass moves no joint more than `tol` (the forces have
-        balanced; more passes won't change the path). The breakdown's "iters" is how many it took."""
-        q_start = np.array(q_start, dtype=float)
-        q_goal = np.array(q_goal, dtype=float)
-        path = np.linspace(q_start, q_goal, self.n_waypoints)
-
-        for n_iters in range(1, self.iters + 1):
-            step = 0.0
-            for i in range(1, self.n_waypoints - 1):
-                smooth_grad = 2.0 * self.w_smooth * (2 * path[i] - path[i - 1] - path[i + 1])
-                _, _, cs_grad, _ = self._waypoint_collision_singularity_cost_grad(
-                    path[i], sandbox, object_boxes, table_height
-                )
-                delta = self.lr * (smooth_grad + cs_grad)
-                path[i] = path[i] - delta
-                step = max(step, np.abs(delta).max())
-            if step < self.tol:
-                break
-
-        breakdown = self.path_cost(path, sandbox, object_boxes, table_height)
-        breakdown["iters"] = n_iters
-        return path, breakdown
-
-
-JOINT_LIMIT_MARGIN = 0.02  # rad: IK and the planner keep joints this far inside their limits
-
-
-def joint_limits(model, n_dof=None):
-    """(lo, hi) for the arm's joints, JOINT_LIMIT_MARGIN inside the model's limits: a goal planned
-    exactly on a limit is one the sim's soft limit keeps pushing the arm back from, so it never
-    settles there."""
-    n_dof = n_dof or model.nu
-    return model.jnt_range[:n_dof, 0] + JOINT_LIMIT_MARGIN, model.jnt_range[:n_dof, 1] - JOINT_LIMIT_MARGIN
-
-
-def numeric_ik(sandbox, target_pos, target_quat, q_seed, model,
-               max_iters=150, pos_tol=5e-3, rot_tol=5e-2, step_scale=0.5, damping=1e-2):
-    """Iterative damped-least-squares IK from a single seed (the same
-    twist-tracking math as mj_interface.diff_ik, applied to convergence). Clips to joint_limits (JOINT_LIMIT_MARGIN inside the real ones) every iteration.
-    Returns (q, converged)."""
-    q = np.array(q_seed, dtype=float)
-    lo, hi = joint_limits(model)
-    for _ in range(max_iters):
-        sandbox.set_q(q)
-        pos_err = np.array(target_pos) - sandbox.ee_pos()
-        omega = orientation_ds(sandbox.ee_quat(), target_quat, 1.0)  # norm ~ angle error at k=1
-        if np.linalg.norm(pos_err) < pos_tol and np.linalg.norm(omega) < rot_tol:
-            return q, True
-        dq = damped_least_squares(sandbox.ee_jacobian_full(), np.hstack([pos_err, omega]), damping)
-        q = np.clip(q + step_scale * dq, lo, hi)
-    return q, False
-
-
-def _wrap_near(q, reference, lo, hi):
-    """Rewrap each joint to its 2pi-equivalent closest to `reference`, so random-seed IK doesn't
-    produce a needlessly-long "long way around" solution. Only where the rewrapped angle is still
-    within the joint's limits: a +-170 deg joint (iiwa) can't take the shortcut through +-180."""
-    wrapped = reference + (q - reference + np.pi) % (2 * np.pi) - np.pi
-    return np.where((wrapped >= lo) & (wrapped <= hi), wrapped, q)
-
-
-def solve_ik_candidates(sandbox, target_pos, target_quat, model, q_current,
-                        n_random_seeds=8, dedupe_tol=0.15, rng=None, known=()):
-    """Multi-start numerical IK: q_current plus random seeds, keep every seed that converges,
-    dedupe near-identical solutions (same kinematic branch). Each result is wrapped near
-    q_current first (see _wrap_near). known: solutions found already (an earlier call) -- only new
-    ones are returned."""
-    rng = rng or np.random.default_rng()
-    lo, hi = joint_limits(model)
-    q_current = np.array(q_current, dtype=float)
-    seeds = [q_current] + [rng.uniform(lo, hi) for _ in range(n_random_seeds)]
-
-    candidates = list(known)
-    for seed in seeds:
-        q, ok = numeric_ik(sandbox, target_pos, target_quat, seed, model)
-        if not ok:
-            continue
-        q = np.clip(_wrap_near(q, q_current, lo, hi), lo, hi)
-        if any(np.max(np.abs(q - c)) < dedupe_tol for c in candidates):
-            continue
-        candidates.append(q)
-    return candidates[len(known):]
-
 
 # Per-process globals, set once by _init_worker after the pool forks -- each
 # worker gets its own MjData (MjData isn't thread- or fork-safe to share) on the
@@ -273,11 +147,11 @@ def _optimize_worker(args):
 
 
 def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat,
-                    planner=None, n_random_seeds=8, ik_rounds=4, parallel=False, n_workers=None, rng=None,
+                    planner, n_random_seeds=8, ik_rounds=4, parallel=False, n_workers=None, rng=None,
                     boxes=()):
-    """Full pipeline: multi-seed IK for candidate goals, CHOMP-optimize a path to each, pick
-    the winner by total path cost (not isolated endpoint quality). Returns None if no seed
-    converged, else {'best': ..., 'all_candidates': ...}.
+    """Full pipeline: multi-seed IK for candidate goals, optimize a path to each with `planner` (a
+    TrajectoryPlanner subclass), pick the winner by total path cost (not isolated endpoint quality).
+    Returns None if no seed converged, else {'best': ..., 'all_candidates': ...}.
 
     ik_rounds: up to this many rounds of n_random_seeds IK seeds, stopping at the first that finds a
     goal clear of collisions. One round's seeds can all land on colliding branches (e.g. every one
@@ -295,7 +169,6 @@ def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat
 
     boxes: more boxes (center, rot, half_extents) to keep clear of besides env's block, where they are
     now -- e.g. another arm's T."""
-    planner = planner or TrajectoryPlanner()
     sandbox = KinematicsSandbox(model, geometry)
     object_boxes = env.update(data) + list(boxes)  # blocks don't move during planning -- one snapshot suffices
     table_height = env.table_height
