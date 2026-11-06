@@ -71,8 +71,7 @@ PREFETCH_ACTIONS = 2     # start inferring the next chunk when this few actions 
 SUCCESS_COVERAGE = 0.9  # Push-T's success threshold: fraction of the goal T covered by the block
 PUSH_TIME_LIMIT = 300.0   # s of sim time in the push phase
 
-OBSTACLE_CENTER = [0.3545, 0.146, 0.2589]  # m, world frame: sweep around this point; None = OBSTACLE_HEIGHT above the T's start
-OBSTACLE_HEIGHT = 0.30   # m: above the T, through the wrist/forearm while pushing (the rod tip is at 2.5 cm, flange ~17.5 cm)
+OBSTACLE_CENTER = [0.3545, 0.146, 0.2589]  # m, world frame: sweeps around this point
 OBSTACLE_AXIS = [0, 1, 0]  # world frame: sweeps left and right along this
 OBSTACLE_AMPLITUDE = 0.45  # m either side of its center
 OBSTACLE_SPEED = 0.2       # m/s, constant
@@ -82,15 +81,11 @@ OBSTACLE_DWELL = 5.0       # s: starts at -OBSTACLE_AMPLITUDE (along OBSTACLE_AX
 
 def make_obstacle(arm):
     """The obstacle sweeping through the arm while it pushes."""
-    if OBSTACLE_CENTER is not None:
-        center, where = np.asarray(OBSTACLE_CENTER, dtype=float), "set by OBSTACLE_CENTER"
-    else:
-        center, where = np.append(arm.data.body("t_block").xipos[:2], OBSTACLE_HEIGHT), f"{OBSTACLE_HEIGHT} m above the T"
-    obstacle = MovingObstacle(arm.model, center, axis=OBSTACLE_AXIS, amplitude=OBSTACLE_AMPLITUDE,
+    obstacle = MovingObstacle(arm.model, OBSTACLE_CENTER, axis=OBSTACLE_AXIS, amplitude=OBSTACLE_AMPLITUDE,
                               speed=OBSTACLE_SPEED, dwell=OBSTACLE_DWELL)
     motion = (f"crosses +-{OBSTACLE_AMPLITUDE} m along {OBSTACLE_AXIS}, waiting {OBSTACLE_DWELL} s at each end"
               if OBSTACLE_DWELL is not None else f"sweeps +-{OBSTACLE_AMPLITUDE} m along {OBSTACLE_AXIS}")
-    print(f"Obstacle: around {np.round(obstacle.center, 3).tolist()} ({where}), {motion} at {OBSTACLE_SPEED} m/s")
+    print(f"Obstacle: around {np.round(obstacle.center, 3).tolist()}, {motion} at {OBSTACLE_SPEED} m/s")
     return obstacle
 
 

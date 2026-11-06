@@ -1,5 +1,6 @@
 """Scene geometry: RobotGeometry tracks the arm's self-collision capsules; EnvironmentGeometry tracks
-the tabletop and t-block. Both read model.* once at init and refresh world poses via update(data)."""
+the tabletop and t-block. Both read model.* once at init; RobotGeometry.world(data) and
+EnvironmentGeometry.update(data) give their world poses at the current state."""
 import hashlib
 import itertools
 import json
@@ -8,7 +9,7 @@ import pathlib
 import mujoco
 import numpy as np
 
-from core.geometry import quat2mat, capsule_capsule_distance_batch
+from core.geometry import quat2mat, capsule_capsule_distance
 
 
 class RobotGeometry:
@@ -154,7 +155,7 @@ class RobotGeometry:
             center = data.xpos[body] + np.einsum("nij,nj->ni", rot, local_pos)
             axis = np.einsum("nij,nj->ni", rot, local_z)
             A, B = center - half * axis, center + half * axis
-            h, _, _ = capsule_capsule_distance_batch(A[I], B[I], radius[I], A[J], B[J], radius[J])
+            h, _, _ = capsule_capsule_distance(A[I], B[I], radius[I], A[J], B[J], radius[J])
             np.minimum(h_min, h, out=h_min)
             np.maximum(h_max, h, out=h_max)
             endpoints.append(np.hstack([A[:n_env], B[:n_env]]))
@@ -186,28 +187,15 @@ class RobotGeometry:
             ))
         return world
 
-    def update(self, data):
-        """Self-collision capsules in world frame this step."""
-        return self._capsules_world(data, self.capsules)
-
-    def update_all(self, data):
-        """Unfiltered capsules in world frame, for table/object checks."""
-        return self._capsules_world(data, self.env_capsules)
-
-    def link_capsules_world(self, data):
-        """Every capsule, incl. the synthetic base, in world frame -- e.g. to draw them."""
-        return self._capsules_world(data, self.link_capsules)
-
-    def link_pairs_world(self, data):
-        """(capsule, capsule) pairs in world frame this step, for link-vs-link self-collision."""
-        world = self._capsules_world(data, self.link_capsules)
-        return [(world[i], world[j]) for i, j in self.link_pairs]
-
     def world(self, data):
-        """update, update_all and link_pairs_world in one pass -- every capsule moved to world frame
-        once, for a control tick that needs all three: dict(self=..., env=..., pairs=...)."""
+        """Every capsule in world frame at data's state, moved there once:
+          all   -- every capsule, the synthetic base included (e.g. to draw them)
+          self  -- the self-collision capsules (capsules)
+          env   -- the real collision geoms (env_capsules), for table and object checks
+          pairs -- the guarded link-vs-link pairs (link_pairs), as (capsule, capsule)"""
         world = self._capsules_world(data, self.link_capsules)
-        return dict(self=[world[k] for k in self._self_index],
+        return dict(all=world,
+                    self=[world[k] for k in self._self_index],
                     env=world[:len(self.env_capsules)],  # link_capsules = env_capsules + base_entries
                     pairs=[(world[i], world[j]) for i, j in self.link_pairs])
 

@@ -4,7 +4,6 @@ which robot it is."""
 import time
 
 import mujoco
-import numpy as np
 
 from mj.mj_interface import site_pose
 from mj.model import Pusher, load_model
@@ -53,15 +52,3 @@ class Arm:
 
     def step(self):
         mujoco.mj_step(self.model, self.data)
-
-    def push_flange(self, magnitude, direction, start, duration, site="attachment_site"):
-        """Simulated external push: magnitude N along direction (world frame, normalized here) at
-        `site`, while start <= time < start + duration; nothing otherwise. Call it every tick, before
-        step(). data.xfrc_applied acts at the body's centre of mass, so a force at the site also needs
-        the torque it makes about it; the row is overwritten every call, so the push really stops."""
-        model, data = self.model, self.data
-        body = model.site_bodyid[model.site(site).id]
-        active = start <= data.time < start + duration
-        force = magnitude * np.asarray(direction, dtype=float) / np.linalg.norm(direction) if active else np.zeros(3)
-        data.xfrc_applied[body, :3] = force
-        data.xfrc_applied[body, 3:] = np.cross(data.site(site).xpos - data.xipos[body], force)

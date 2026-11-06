@@ -36,11 +36,6 @@ class KinematicsSandbox:
     def point_jacobian(self, body_id, point):
         return _mj_point_jacobian(self.model, self.data, body_id, point)
 
-    def self_capsules(self):
-        return self.geometry.update(self.data)
-
-    def env_capsules(self):
-        return self.geometry.update_all(self.data)
-
-    def link_pairs(self):
-        return self.geometry.link_pairs_world(self.data)
+    def world_capsules(self):
+        """The arm's capsules in world frame: RobotGeometry.world's dict."""
+        return self.geometry.world(self.data)

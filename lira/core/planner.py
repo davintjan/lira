@@ -44,9 +44,10 @@ class TrajectoryPlanner:
         geometry.clearance_rows. The default 0 keeps only the violated ones: the cost and the intrusion
         check need nothing else."""
         sandbox.set_q(q)
+        caps = sandbox.world_capsules()
         return clearance_rows(
-            sandbox.ee_pos(), sandbox.ee_jacobian_full()[:3], sandbox.self_capsules(), sandbox.link_pairs(),
-            sandbox.env_capsules(), object_boxes, table_height, sandbox.point_jacobian,
+            sandbox.ee_pos(), sandbox.ee_jacobian_full()[:3], caps["self"], caps["pairs"], caps["env"],
+            object_boxes, table_height, sandbox.point_jacobian,
             margin=self.margin, table_margin=self.table_margin, activation=activation,
         )
 
@@ -147,7 +148,7 @@ def _optimize_worker(args):
 
 
 def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat,
-                    planner, n_random_seeds=8, ik_rounds=4, parallel=False, n_workers=None, rng=None,
+                    planner, n_random_seeds=8, ik_rounds=4, parallel=False, rng=None,
                     boxes=()):
     """Full pipeline: multi-seed IK for candidate goals, optimize a path to each with `planner` (a
     TrajectoryPlanner subclass), pick the winner by total path cost (not isolated endpoint quality).
@@ -191,7 +192,7 @@ def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat
     candidates = clear_goals or candidates
 
     if parallel and len(candidates) > 1:
-        n_workers = n_workers or min(os.cpu_count() or 1, len(candidates))
+        n_workers = min(os.cpu_count() or 1, len(candidates))
         tasks = [(planner, q_start, q_goal, object_boxes, table_height) for q_goal in candidates]
         ctx = mp.get_context("fork")
         with ctx.Pool(n_workers, initializer=_init_worker, initargs=(model, geometry)) as pool:

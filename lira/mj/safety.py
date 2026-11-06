@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from core.cbf import cbf_qp
-from core.geometry import capsule_capsule_distance_batch, capsule_set_rows, clearance_rows, moving_obstacle_rows
+from core.geometry import capsule_capsule_distance, capsule_set_rows, clearance_rows, moving_obstacle_rows
 from mj.mj_interface import point_jacobian, site_jacobian
 
 
@@ -35,8 +35,8 @@ class SafetyFilter:
         obstacle: MovingObstacle.update's capsule this tick, or None. The whole arm, rod included,
           stays clear of it.
         others: capsules of something else that moves, where they are now -- another arm's links
-          (its RobotGeometry.link_capsules_world). This arm keeps its share of each clearance (see
-          core.geometry.capsule_set_rows); the other arm, filtered the same way, keeps the rest.
+          (the "env" capsules of its RobotGeometry.world). This arm keeps its share of each clearance
+          (see core.geometry.capsule_set_rows); the other arm, filtered the same way, keeps the rest.
         boxes: more boxes to keep clear of besides the T, where they are now -- e.g. another arm's T.
           Every link stays clear of them, the rod too, even with touch_block.
         touch_block: let the rod touch the T, but only as much as u_des asks for (that's the pushing, see
@@ -102,7 +102,7 @@ class ObstacleMonitor:
     def update(self, data, env_capsules, obstacle):
         """Records this tick; returns True on the first tick the obstacle touches the robot."""
         A = np.array([c["a"] for c in env_capsules])
-        clearance = capsule_capsule_distance_batch(
+        clearance = capsule_capsule_distance(
             A, np.array([c["b"] for c in env_capsules]), np.array([c["radius"] for c in env_capsules]),
             np.broadcast_to(obstacle["a"], A.shape), np.broadcast_to(obstacle["b"], A.shape),
             np.full(len(env_capsules), obstacle["radius"]))[0].min()

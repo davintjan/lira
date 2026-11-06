@@ -32,7 +32,7 @@ import mujoco.viewer
 import numpy as np
 
 from common import PLANNERS, make_field, make_planner, print_field, print_plan, resolve_seed
-from core.geometry import capsule_capsule_distance_batch
+from core.geometry import capsule_capsule_distance
 from core.planner import plan_trajectory
 from mj.arm import Arm
 from mj.model import load_dual_model
@@ -176,7 +176,7 @@ class ArmArmMonitor:
         """Records this tick; returns this tick's clearance (m)."""
         I, J = (idx.ravel() for idx in np.meshgrid(np.arange(len(caps_a)), np.arange(len(caps_b)), indexing="ij"))
         get = lambda caps, key, idx: np.array([caps[k][key] for k in idx])  # noqa: E731
-        clearance = capsule_capsule_distance_batch(
+        clearance = capsule_capsule_distance(
             get(caps_a, "a", I), get(caps_a, "b", I), get(caps_a, "radius", I),
             get(caps_b, "a", J), get(caps_b, "b", J), get(caps_b, "radius", J))[0].min()
         self.min_clearance = min(self.min_clearance, clearance)
@@ -204,7 +204,7 @@ class DualObstacleMonitor:
         """Records this tick; returns True on the first tick the obstacle touches an arm."""
         caps = [cap for arm_caps in world_caps for cap in arm_caps]
         A = np.array([c["a"] for c in caps])
-        self.min_clearance = min(self.min_clearance, capsule_capsule_distance_batch(
+        self.min_clearance = min(self.min_clearance, capsule_capsule_distance(
             A, np.array([c["b"] for c in caps]), np.array([c["radius"] for c in caps]),
             np.broadcast_to(obstacle["a"], A.shape), np.broadcast_to(obstacle["b"], A.shape),
             np.full(len(caps), obstacle["radius"]))[0].min())

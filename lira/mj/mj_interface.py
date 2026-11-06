@@ -14,11 +14,6 @@ def site_pose(mj_data, site="attachment_site"):
     return site.xpos.copy(), ee_quat
 
 
-def body_pose(mj_data, name):
-    body = mj_data.body(name)
-    return body.xpos.copy(), body.xquat.copy()
-
-
 def site_jacobian(model, data, site="attachment_site"):
     jacp = np.zeros((3, model.nv))
     jacr = np.zeros((3, model.nv))
