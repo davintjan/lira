@@ -1,10 +1,34 @@
 """Nominal controllers: what the arm would do with no hazards around. Each returns the joint velocity
 u_des at the live state; SafetyFilter.filter then makes it safe. (The planned path's field,
-core.path_field.PathVelocityField, is the third one: it maps q to u_des directly.)"""
+core.path_field.PathVelocityField, is the other one: it maps q to u_des directly.) Also where the
+reach sims send the arm: hover_target."""
+import mujoco
 import numpy as np
 
 from core.ds import clip_norm, damped_least_squares, linear_pos_ds, orientation_ds
 from mj.mj_interface import diff_ik, site_jacobian
+from mj.model import TOOL_DOWN_QUAT
+
+IK_DAMPING = 1e-2                          # damped least squares: keeps J^+ finite near singularities
+HOVER_OFFSET = np.array([0.0, 0.0, 0.1])   # m: where the reach sims hover the probe, from the T's center of mass
+HOVER_DS_MAX_SPEED = 0.8                   # m/s: cap on hover_ds's flange speed
+
+
+def hover_target(arm):
+    """Flange pose that puts the probe HOVER_OFFSET above the T's center of mass (its body origin is
+    the bar's edge, see world.xml), rod pointing down, turned with the T."""
+    block = arm.data.body("t_block")
+    pos = block.xipos + HOVER_OFFSET + arm.pusher.flange_above_probe
+    quat = np.zeros(4)
+    mujoco.mju_mulQuat(quat, block.xquat, TOOL_DOWN_QUAT)
+    return pos, quat
+
+
+def hover_ds(arm):
+    """flange_pose_ds straight to hover_target, re-aimed every call (the T may have been knocked): what
+    the reach sims follow when planning finds no path."""
+    return flange_pose_ds(arm, *hover_target(arm), k_p=arm.robot.k_p, k_o=arm.robot.k_o,
+                          max_speed=HOVER_DS_MAX_SPEED, damping=IK_DAMPING)
 
 
 def flange_pose_ds(arm, target_pos, target_quat, k_p, k_o, max_speed, damping):

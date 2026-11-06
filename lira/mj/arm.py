@@ -5,6 +5,7 @@ import time
 
 import mujoco
 
+from core.path_field import PathVelocityField
 from mj.mj_interface import site_pose
 from mj.model import Pusher, load_model
 from mj.robots import SCENE_DIR
@@ -45,6 +46,10 @@ class Arm:
     def probe_pos(self):
         """The rod tip's centre: the point that plays Push-T's pusher."""
         return self.data.site("probe").xpos.copy()
+
+    def path_field(self, path):
+        """The velocity field following path (planned for this arm), with the robot's gains."""
+        return PathVelocityField(path, k_tangent=self.robot.path_k_tangent, k_corrective=self.robot.path_k_corrective)
 
     def command(self, qdot):
         """Joint velocity to the velocity servos (see mj.model.load_model)."""

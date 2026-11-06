@@ -18,20 +18,23 @@ mj/        MuJoCo glue
   robots.py        RobotConfig + ROBOTS: everything that differs between arms
   model.py         load_model: scene xml + pusher rod + velocity servos (MjSpec edits)
   arm.py           Arm: model, live data and collision geometry for one robot
-  safety.py        SafetyFilter (clearance rows at the live state -> cbf_qp), ObstacleMonitor
-  tasks.py         nominal controllers: flange pose DS, probe DS
+  safety.py        SafetyFilter (clearance rows at the live state -> cbf_qp)
+  monitor.py       ContactMonitor: how close two sets of bodies come, and whether they touch
+  tasks.py         nominal controllers: flange pose DS, probe DS; the reach sims' hover target
   scene.py         robot/environment capsules from the model, moving obstacle
   mj_interface.py  poses, Jacobians, differential IK
   sandbox.py       KinematicsSandbox: an arm's kinematics at any q, for planning and IK
+  dual.py          the two-arm scene: DualArm (one arm's own model, synced from the two-arm sim), its obstacle
   utils.py         viewer overlays (draw_capsules: what the planner and CBF see)
 pusht/     Push-T glue
   frame.py         table <-> Push-T pixels, observation, coverage, pre-push spot
   policy.py        load the diffusion policy; ChunkedPolicy runs it in a background thread
+  task.py          PushTTask: one arm playing Push-T (reach, descend, push, lift, hover)
 scenes/    the MuJoCo world
   world.xml        table, T, goal, obstacle -- shared by every robot
   scene_<robot>.xml  one robot (vendored from mujoco_menagerie) + world.xml
   scene_dual.xml     two arms facing each other, a Push-T board each, overlapping in the middle
-common.py          setup both sims share: CLI flags, seed, planner, path field, plan report
+common.py          setup every sim shares: CLI flags, seed, planner, plan report, viewer loop
 reach_sim.py       plan to the T, follow the field, dodge the obstacle
 dual_reach_sim.py  two arms (scene_dual.xml), each reaching over the other's T, kept apart by the CBF
 dual_pusht_sim.py  two arms, each playing Push-T with its own policy copy; --zigzag swaps the boards

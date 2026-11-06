@@ -1,16 +1,19 @@
-"""Setup both sims share: the seed, the planner, the path field, and the startup report."""
+"""Setup every sim shares: the CLI flags, the seed, the planner, the startup report and the viewer loop."""
+import contextlib
+import time
+
+import mujoco
+import mujoco.viewer
 import numpy as np
 
-from core.path_field import PathVelocityField
 from core.planner_gd import GDTrajectoryPlanner
 from core.planner_sqp import SQPTrajectoryPlanner
-from mj.robots import DEFAULT_ROBOT, ROBOTS
+from mj.recorder import Recorder
 
 PLANNERS = {"gd": GDTrajectoryPlanner, "sqp": SQPTrajectoryPlanner}  # gradient descent / SQP with collision as a constraint
 
 
 def add_common_args(parser):
-    parser.add_argument("--robot", choices=sorted(ROBOTS), default=DEFAULT_ROBOT)
     parser.add_argument("--planner", choices=sorted(PLANNERS), default="sqp")
     parser.add_argument("--seed", type=int, default=None,
                         help="replay a run: the seed it printed at startup (default: a fresh one)")
@@ -33,11 +36,6 @@ def make_planner(kind, cbf_margin):
     return planner_cls(margin=cbf_margin + 2 * planner_cls().feasibility_eps)
 
 
-def make_field(plan, robot):
-    """The velocity field following plan's best path, with the robot's gains."""
-    return PathVelocityField(plan["best"]["path"], k_tangent=robot.path_k_tangent, k_corrective=robot.path_k_corrective)
-
-
 def print_plan(plan, planner, kind):
     """Every candidate's cost (gradient descent), then the winner's cost breakdown."""
     for k, cand in enumerate(plan["all_candidates"]):
@@ -56,3 +54,21 @@ def print_plan(plan, planner, kind):
 def print_field(field):
     print(f"Path field: {field.seg_len.sum():.2f} rad of path, energy V = path left + {field.k_tube:g}/2 * "
           f"(distance to path)^2, must fall >= {field.min_progress:g} rad/s far from the goal")
+
+
+def run_viewer(model, data, tick, draw_overlays, record=None):
+    """The loop every sim runs until the viewer window closes, paced to real time: tick() -- one physics
+    step, with whatever control and monitoring goes with it -- then the overlays and, with record (a path,
+    see Recorder), a video frame. draw_overlays(scene) adds the sim's extra geoms to a scene."""
+    dt = model.opt.timestep
+    recording = Recorder(model, record) if record else contextlib.nullcontext()
+    with mujoco.viewer.launch_passive(model, data) as viewer, recording as recorder:
+        while viewer.is_running():
+            t_wall = time.perf_counter()
+            tick()
+            viewer.user_scn.ngeom = 0
+            draw_overlays(viewer.user_scn)
+            if recorder is not None:
+                recorder.capture(data, draw_overlays)
+            viewer.sync()
+            time.sleep(max(0.0, dt - (time.perf_counter() - t_wall)))

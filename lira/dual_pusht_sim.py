@@ -4,9 +4,8 @@ Push-T with its own copy of the diffusion policy on its own board -- the iiwa14 
 ur5e the blue T to goal_b. The boards overlap in the middle, where both Ts start, so the arms push in
 the same space. Both start with every joint at 0.
 
-Each arm runs pusht_sim.py's phases (pusht_sim.PushTTask) on its own single-arm model, as
-in dual_reach_sim.py: the physics runs in the two-arm model and every control tick each arm's model is
-synced from it. Neither the plans nor the policies know the other arm exists; the CBF keeps them apart,
+Each arm runs pusht.task.PushTTask's phases on its own single-arm model (mj.dual.DualArm), as in
+dual_reach_sim.py. Neither the plans nor the policies know the other arm exists; the CBF keeps them apart,
 each arm holding the other's links where they are right now (core.geometry.capsule_set_rows). The
 obstacle sweeps across both boards between the arms, and both dodge it too (--no-obstacle parks it); it
 stops where it is once both arms are done pushing.
@@ -18,29 +17,26 @@ other arm's T its plan and CBF keep clear of entirely, rod included, held where 
 Run from this directory:  .venv/bin/python dual_pusht_sim.py [--seed N] [--zigzag] [--no-obstacle] [--record out.mp4]
 """
 import argparse
-import contextlib
 import os
 import pathlib
-import time
 
 os.environ.setdefault("MUJOCO_GL", "egl")  # offscreen rendering for --record; must precede `import mujoco`
 # the viewer window: the glfw package's Wayland build crashes on a GNOME setting it can't read, its X11 build runs fine
 os.environ.setdefault("PYGLFW_LIBRARY_VARIANT", "x11")
 
 import mujoco
-import mujoco.viewer
 import numpy as np
 import torch
 
-from common import PLANNERS, make_planner, resolve_seed
-from dual_reach_sim import CBF, CONTROL_EVERY, ArmArmMonitor, DualArm, DualObstacleMonitor, make_obstacle
+from common import add_common_args, make_planner, resolve_seed, run_viewer
+from mj.dual import CONTROL_EVERY, DualArm, make_monitors, make_obstacle
 from mj.model import Pusher, load_dual_model
-from mj.recorder import Recorder
+from mj.safety import CBFConfig
 from pusht.frame import PushTFrame
-from pusht.policy import REFERENCE_CHECKPOINT, ChunkedPolicy, load_policy
-from pusht_sim import POLICY_DT, PREFETCH_ACTIONS, PREPUSH_MARGIN_PX, PushTTask, draw_targets
+from pusht.policy import DEVICE, REFERENCE_CHECKPOINT, ChunkedPolicy, load_policy
+from pusht.task import POLICY_DT, PREFETCH_ACTIONS, PREPUSH_MARGIN_PX, PushTTask, draw_targets
 
-DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+CBF = CBFConfig()
 # m from the probe's centre to the T's outline at the pre-push spot: the rod, the CBF's margin (descending,
 # the rod may not touch the T) and 1 cm so it isn't held right at that margin
 PREPUSH_CLEARANCE = Pusher().radius + CBF.margin + 0.01
@@ -56,10 +52,10 @@ ZIGZAG_ARMS = (("a_", "iiwa14", "t_block_b", "goal_b"),
 
 
 class PushTArm(PushTTask):
-    """One arm's Push-T: pusht_sim.PushTTask on a DualArm, with its own policy and board."""
+    """One arm's Push-T: pusht.task.PushTTask on a DualArm, with its own policy and board."""
 
     def __init__(self, dual_model, prefix, robot_name, block, goal, policy):
-        self.dual = DualArm(dual_model, prefix, robot_name, block, rgba=None)
+        self.dual = DualArm(dual_model, prefix, robot_name, block, CBF)
         frame = PushTFrame(dual_model, goal=goal)
         super().__init__(self.dual.arm, self.dual.safety, frame, policy, name=robot_name,
                          prepush_spot=lambda data: frame.prepush_spot_near(data, PREPUSH_CLEARANCE, PREPUSH_MARGIN_PX),
@@ -68,11 +64,7 @@ class PushTArm(PushTTask):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--planner", choices=sorted(PLANNERS), default="sqp")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="replay a run: the seed it printed at startup (default: a fresh one)")
-    parser.add_argument("--record", metavar="PATH", default=None,
-                        help="also record video: PATH=out.mp4 writes out_front.mp4 and out_top.mp4")
+    add_common_args(parser)
     parser.add_argument("--checkpoint", type=pathlib.Path, default=REFERENCE_CHECKPOINT)
     parser.add_argument("--zigzag", action="store_true",
                         help="each arm plays the other's board: the ur5e the red T, the iiwa14 the blue one")
@@ -85,7 +77,8 @@ def main(argv=None):
     print(f"Seed: {seed}   (--seed {seed} replays IK seeds and diffusion noise -- inference timing still varies run to run)")
     torch.manual_seed(seed)
 
-    model = load_dual_model(prefixes=tuple(prefix for prefix, *_ in ARMS), joint_vel_max=CBF.joint_vel_max)
+    prefixes = tuple(prefix for prefix, *_ in ARMS)
+    model = load_dual_model(prefixes=prefixes, joint_vel_max=CBF.joint_vel_max)
     data = mujoco.MjData(model)  # qpos0: every arm joint at 0, the Ts at scene_dual.xml's Push-T start
     mujoco.mj_forward(model, data)
     sampler = f"DDIM, {args.ddim_steps} steps" if args.ddim_steps else "DDPM"
@@ -99,10 +92,29 @@ def main(argv=None):
         push_arm.dual.sync(data)
         push_arm.plan(planner, np.random.default_rng([seed, k]), boxes=push_arm.dual.other_boxes)
 
-    monitor = ArmArmMonitor(model)
+    arm_monitor, obstacle_monitor = make_monitors(model, prefixes)
     obstacle = None if args.no_obstacle else make_obstacle(model)
-    obstacle_monitor = DualObstacleMonitor(model)
-    obstacle_now = None
+    step = 0
+
+    def tick():
+        nonlocal step
+        obstacle_now = obstacle.update(data) if obstacle is not None else None
+        if step % CONTROL_EVERY == 0:
+            for push_arm in arms:
+                push_arm.dual.sync(data)
+            caps = [push_arm.arm.geometry.world(push_arm.arm.data) for push_arm in arms]
+            for push_arm, own, other in zip(arms, caps, caps[::-1]):
+                data.ctrl[push_arm.dual.ctrl_idx] = push_arm.control(data.time, own, obstacle_now, others=other["env"],
+                                                                     boxes=push_arm.dual.other_boxes)
+            if arm_monitor.update(data, caps[0]["env"], caps[1]["env"]):
+                print(f"[{data.time:6.2f}s] WARNING: the arms touched")
+            if obstacle_now is not None:
+                if obstacle_monitor.update(data, caps[0]["env"] + caps[1]["env"], [obstacle_now]):
+                    print(f"[{data.time:6.2f}s] WARNING: the obstacle hit an arm")
+                if all(push_arm.finished for push_arm in arms):
+                    obstacle.freeze(data)  # both tasks over: the obstacle stops where it is
+        mujoco.mj_step(model, data)
+        step += 1
 
     def draw_overlays(scn):
         """Each arm's policy targets, while it's pushing."""
@@ -110,40 +122,8 @@ def main(argv=None):
             draw_targets(scn, push_arm.frame, push_arm.policy.target if push_arm.phase == "push" else None,
                          push_arm.policy.queue)
 
-    dt = model.opt.timestep
-    step = 0
-    recording = Recorder(model, args.record) if args.record else contextlib.nullcontext()
-    with mujoco.viewer.launch_passive(model, data) as viewer, recording as recorder:
-        while viewer.is_running():
-            t_wall = time.perf_counter()
-            if obstacle is not None:
-                obstacle_now = obstacle.update(data)
-            if step % CONTROL_EVERY == 0:
-                for push_arm in arms:
-                    push_arm.dual.sync(data)
-                caps = [push_arm.arm.geometry.world(push_arm.arm.data) for push_arm in arms]
-                for push_arm, own, other in zip(arms, caps, caps[::-1]):
-                    data.ctrl[push_arm.dual.ctrl_idx] = push_arm.control(data.time, own, obstacle_now, others=other["env"],
-                                                                         boxes=push_arm.dual.other_boxes)
-                touched_before = monitor.contact_ticks
-                monitor.update(data, *[c["env"] for c in caps])
-                if monitor.contact_ticks and not touched_before:
-                    print(f"[{data.time:6.2f}s] WARNING: the arms touched")
-                if obstacle_now is not None:
-                    if obstacle_monitor.update(data, [c["env"] for c in caps], obstacle_now):
-                        print(f"[{data.time:6.2f}s] WARNING: the obstacle hit an arm")
-                    if all(push_arm.finished for push_arm in arms):
-                        obstacle.freeze(data)  # both tasks over: the obstacle stops where it is
-            mujoco.mj_step(model, data)
-            step += 1
-            viewer.user_scn.ngeom = 0
-            draw_overlays(viewer.user_scn)
-            if recorder is not None:
-                recorder.capture(data, draw_overlays)
-            viewer.sync()
-            time.sleep(max(0.0, dt - (time.perf_counter() - t_wall)))
-    print(f"Arms: closest {monitor.min_clearance * 100:.1f} cm, {monitor.contact_ticks} contact ticks"
-          + ("" if obstacle is None else f" | {obstacle_monitor.summary()}"))
+    run_viewer(model, data, tick, draw_overlays, args.record)
+    print(f"Arms: {arm_monitor.summary()}" + ("" if obstacle is None else f" | obstacle: {obstacle_monitor.summary()}"))
 
 
 if __name__ == "__main__":

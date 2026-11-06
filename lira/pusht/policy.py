@@ -18,6 +18,7 @@ from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1
 from diffusion_policy.policy.diffusion_unet_lowdim_policy import DiffusionUnetLowdimPolicy  # noqa: E402
 
 REFERENCE_CHECKPOINT = DIFFUSION_POLICY_DIR / "data/outputs/reference/epoch=0550-test_mean_score=0.969.ckpt"
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
 def load_policy(checkpoint, device, ddim_steps=None):

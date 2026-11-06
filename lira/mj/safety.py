@@ -3,10 +3,8 @@
 runs the CBF-QP on them."""
 from dataclasses import dataclass
 
-import numpy as np
-
 from core.cbf import cbf_qp
-from core.geometry import capsule_capsule_distance, capsule_set_rows, clearance_rows, moving_obstacle_rows
+from core.geometry import capsule_set_rows, clearance_rows, moving_obstacle_rows
 from mj.mj_interface import point_jacobian, site_jacobian
 
 
@@ -88,35 +86,3 @@ class SafetyFilter:
         return [(h + h_dot_obstacle / cfg.alpha, grad) for h, grad, h_dot_obstacle in moving_obstacle_rows(
             env_capsules, obstacle, self._jacobian, margin=cfg.margin, activation=cfg.activation, alpha=cfg.alpha)]
 
-
-class ObstacleMonitor:
-    """Tracks how close the moving obstacle gets to the arm, and whether MuJoCo ever has them in
-    contact -- the proof the CBF is dodging, not just lucky."""
-
-    def __init__(self, model):
-        self.model = model
-        self.obstacle_body = model.body("obstacle").id
-        self.min_clearance = np.inf  # m
-        self.contact_ticks = 0
-
-    def update(self, data, env_capsules, obstacle):
-        """Records this tick; returns True on the first tick the obstacle touches the robot."""
-        A = np.array([c["a"] for c in env_capsules])
-        clearance = capsule_capsule_distance(
-            A, np.array([c["b"] for c in env_capsules]), np.array([c["radius"] for c in env_capsules]),
-            np.broadcast_to(obstacle["a"], A.shape), np.broadcast_to(obstacle["b"], A.shape),
-            np.full(len(env_capsules), obstacle["radius"]))[0].min()
-        self.min_clearance = min(self.min_clearance, clearance)
-        robot_bodies = {c["body_id"] for c in env_capsules}
-        body_of = self.model.geom_bodyid
-        touching = any(
-            self.obstacle_body in (body_of[c.geom1], body_of[c.geom2])
-            and {body_of[c.geom1], body_of[c.geom2]} & robot_bodies
-            for c in data.contact[:data.ncon])
-        first_hit = touching and self.contact_ticks == 0
-        self.contact_ticks += touching
-        return first_hit
-
-    def summary(self, so_far=False):
-        return (f"obstacle: closest {self.min_clearance * 100:.1f} cm{' so far' if so_far else ''}, "
-                f"{self.contact_ticks} contact ticks")

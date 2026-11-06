@@ -10,33 +10,25 @@ it clear of itself, the table, the T and an obstacle sweeping through the worksp
 Run from this directory:  .venv/bin/python reach_sim.py [--robot ur5e] [--seed N] [--record out.mp4]
 """
 import argparse
-import contextlib
 import os
 import time
 
 os.environ.setdefault("MUJOCO_GL", "egl")  # offscreen rendering for --record; must precede `import mujoco`
-# the viewer window: the glfw package's Wayland build crashes on a GNOME setting it can't read (GLib-GIO-ERROR ... antialiasing), its X11 build runs fine through XWayland
+# the viewer window: the glfw package's Wayland build crashes on a GNOME setting it can't read, its X11 build runs fine
 os.environ.setdefault("PYGLFW_LIBRARY_VARIANT", "x11")
 
-import mujoco
-import mujoco.viewer
 import numpy as np
 
-from common import add_common_args, make_field, make_planner, print_field, print_plan, resolve_seed
+from common import add_common_args, make_planner, print_field, print_plan, resolve_seed, run_viewer
 from core.planner import plan_trajectory
 from mj.arm import Arm
-from mj.model import TOOL_DOWN_QUAT
-from mj.recorder import Recorder
-from mj.robots import ROBOTS
+from mj.robots import DEFAULT_ROBOT, ROBOTS
 from mj.safety import CBFConfig, SafetyFilter
 from mj.scene import MovingObstacle
-from mj.tasks import flange_pose_ds
+from mj.tasks import hover_ds, hover_target
 from mj.utils import draw_capsules
 
 CBF = CBFConfig()
-HOVER_OFFSET = [0, 0, 0.1]  # m: where the probe hovers relative to the T's center of mass
-MAX_SPEED = 0.8             # m/s: cap on the fallback DS's flange speed
-IK_DAMPING = 1e-2           # damped least squares, keeps J^+ finite near singularities
 
 OBSTACLE_CENTER = [0.2545, -0.046, 0.3389]  # m, world frame: sweeps around this point
 OBSTACLE_AXIS = [0, 1, 0]                   # world frame: sweeps left and right along this
@@ -44,18 +36,9 @@ OBSTACLE_AMPLITUDE = 0.25                   # m either side of its center
 OBSTACLE_SPEED = 0.5                        # m/s, constant
 
 
-def hover_target(arm):
-    """Flange pose that puts the probe HOVER_OFFSET above the T's center of mass (its body origin is
-    the bar's edge, see world.xml), rod pointing down, turned with the T."""
-    block = arm.data.body("t_block")
-    pos = block.xipos + HOVER_OFFSET + arm.pusher.flange_above_probe
-    quat = np.zeros(4)
-    mujoco.mju_mulQuat(quat, block.xquat, TOOL_DOWN_QUAT)
-    return pos, quat
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--robot", choices=sorted(ROBOTS), default=DEFAULT_ROBOT)
     add_common_args(parser)
     parser.add_argument("--hide-collision", action="store_true",
                         help="don't overlay the capsules the planner and CBF see")
@@ -85,13 +68,24 @@ def main(argv=None):
         field = None
     else:
         print_plan(plan, planner, args.planner)
-        field = make_field(plan, robot)
+        field = arm.path_field(plan["best"]["path"])
         print_field(field)
 
     obstacle = MovingObstacle(arm.model, OBSTACLE_CENTER, axis=OBSTACLE_AXIS, amplitude=OBSTACLE_AMPLITUDE,
                               speed=OBSTACLE_SPEED)
     print(f"Obstacle: starts at {np.round(obstacle.center, 4).tolist()}, "
           f"sweeps +-{OBSTACLE_AMPLITUDE} m along {OBSTACLE_AXIS} at {OBSTACLE_SPEED} m/s, heading + first")
+    obstacle_now = None  # the obstacle's capsule this tick
+
+    def tick():
+        nonlocal obstacle_now
+        obstacle_now = obstacle.update(arm.data)
+        if field is not None:
+            u_des = field(arm.q)
+        else:
+            u_des = hover_ds(arm)
+        arm.command(safety.filter(u_des, obstacle=obstacle_now))
+        arm.step()
 
     def draw_overlays(scn):
         """The capsules the planner and CBF see: the arm's (red) and the obstacle's (yellow)."""
@@ -99,25 +93,7 @@ def main(argv=None):
             draw_capsules(scn, arm.geometry.world(arm.data)["all"])
             draw_capsules(scn, [obstacle_now], rgba=(0.95, 0.75, 0.1, 0.35))
 
-    dt = arm.model.opt.timestep  # 0.002 s -> 500 Hz, one control update per sim step
-    recording = Recorder(arm.model, args.record) if args.record else contextlib.nullcontext()
-    with mujoco.viewer.launch_passive(arm.model, arm.data) as viewer, recording as recorder:
-        while viewer.is_running():
-            t_wall = time.perf_counter()
-            obstacle_now = obstacle.update(arm.data)
-            if field is not None:
-                u_des = field(arm.q)
-            else:  # re-aimed every tick: the T may have been knocked
-                u_des = flange_pose_ds(arm, *hover_target(arm), k_p=robot.k_p, k_o=robot.k_o,
-                                       max_speed=MAX_SPEED, damping=IK_DAMPING)
-            arm.command(safety.filter(u_des, obstacle=obstacle_now))
-            arm.step()
-            viewer.user_scn.ngeom = 0
-            draw_overlays(viewer.user_scn)
-            if recorder is not None:
-                recorder.capture(arm.data, draw_overlays)
-            viewer.sync()
-            time.sleep(max(0.0, dt - (time.perf_counter() - t_wall)))  # pace to real time
+    run_viewer(arm.model, arm.data, tick, draw_overlays, args.record)
 
 
 if __name__ == "__main__":
