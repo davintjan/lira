@@ -1,7 +1,7 @@
 """The safety filter between every nominal command and the motors: gathers the arm's clearance rows
 (self-collision, table, the T and any other boxes, a moving obstacle, another arm) at the live state and
 runs the CBF-QP on them."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from core.cbf import cbf_qp
 from core.geometry import capsule_set_rows, clearance_rows, moving_obstacle_rows
@@ -33,7 +33,7 @@ class SafetyFilter:
         obstacle: MovingObstacle.update's capsule this tick, or None. The whole arm, rod included,
           stays clear of it.
         others: capsules of something else that moves, where they are now -- another arm's links
-          (the "env" capsules of its RobotGeometry.world). This arm keeps its share of each clearance
+          (its RobotGeometry.world(data).env). This arm keeps its share of each clearance
           (see core.geometry.capsule_set_rows); the other arm, filtered the same way, keeps the rest.
         boxes: more boxes to keep clear of besides the T, where they are now -- e.g. another arm's T.
           Every link stays clear of them, the rod too, even with touch_block.
@@ -42,21 +42,21 @@ class SafetyFilter:
         arm, cfg = self.arm, self.cfg
         caps = caps or arm.geometry.world(arm.data)
         object_boxes = arm.env.update(arm.data)
-        env_capsules = caps["env"]
+        env_capsules = caps.env
         if touch_block:  # the rod's rows against the T come from _task_contact_rows instead
-            env_capsules = [dict(cap, guard_objects=False) if cap["name"] == "pusher" else cap for cap in env_capsules]
+            env_capsules = [replace(cap, guard_objects=False) if cap.name == "pusher" else cap for cap in env_capsules]
         rows = clearance_rows(
-            arm.flange_pose()[0], site_jacobian(arm.model, arm.data)[:3], caps["self"], caps["pairs"],
+            arm.flange_pose()[0], site_jacobian(arm.model, arm.data)[:3], caps.self_collision, caps.pairs,
             env_capsules, object_boxes + list(boxes), arm.env.table_height, self._jacobian,
             margin=cfg.margin, table_margin=cfg.table_margin, activation=cfg.activation,
         )
         if touch_block:
-            rows += self._task_contact_rows(caps["env"], object_boxes, u_des)
-            rows += self._rod_rows(caps["env"], boxes)  # the rod pushes its own T only
+            rows += self._task_contact_rows(caps.env, object_boxes, u_des)
+            rows += self._rod_rows(caps.env, boxes)  # the rod pushes its own T only
         if obstacle is not None:
-            rows += self._obstacle_rows(caps["env"], obstacle)
+            rows += self._obstacle_rows(caps.env, obstacle)
         if others:
-            rows += capsule_set_rows(caps["env"], others, self._jacobian, margin=cfg.margin, activation=cfg.activation)
+            rows += capsule_set_rows(caps.env, others, self._jacobian, margin=cfg.margin, activation=cfg.activation)
         return cbf_qp(u_des, rows, alpha=cfg.alpha, u_max=cfg.joint_vel_max, metric=metric)
 
     def _task_contact_rows(self, env_capsules, object_boxes, u_des):
@@ -72,7 +72,7 @@ class SafetyFilter:
     def _rod_rows(self, env_capsules, boxes):
         """The plain clearance rows of the rod against boxes."""
         cfg = self.cfg
-        rod = [dict(cap, guard_table=False) for cap in env_capsules if cap["name"] == "pusher"]  # table: already guarded
+        rod = [replace(cap, guard_table=False) for cap in env_capsules if cap.name == "pusher"]  # table: already guarded
         return clearance_rows(
             None, None, [], [], rod, boxes, self.arm.env.table_height, self._jacobian,
             margin=cfg.margin, table_margin=cfg.table_margin, activation=cfg.activation,

@@ -1,5 +1,48 @@
 """Collision-distance/gradient primitives and the manipulability index. Pure math: no MuJoCo, no state."""
+from dataclasses import dataclass
+
 import numpy as np
+
+
+@dataclass
+class Capsule:
+    """A capsule in world frame: the segment a-b, swept by a sphere of radius. a == b is a sphere."""
+    a: np.ndarray
+    b: np.ndarray
+    radius: float
+
+
+@dataclass
+class LinkCapsule(Capsule):
+    """One of an arm's collision capsules in world frame (mj.scene.RobotGeometry.world): the body it's
+    on, and which of its clearances can change at all (see RobotGeometry._sample_hazards)."""
+    body_id: int
+    name: str
+    guard_table: bool = True
+    guard_objects: bool = True
+
+
+@dataclass
+class MovingCapsule(Capsule):
+    """A capsule moving at vel (m/s, world frame) -- the obstacle (mj.scene.MovingObstacle.update)."""
+    vel: np.ndarray
+
+
+@dataclass
+class Box:
+    """An oriented box: centred at center, its axes rot's columns, half_extents along each."""
+    name: str
+    center: np.ndarray
+    rot: np.ndarray
+    half_extents: np.ndarray
+
+
+def capsule_arrays(capsules):
+    """The capsules' endpoints and radii as arrays A, B (N,3) and R (N,): what the distance functions take."""
+    A = np.array([cap.a for cap in capsules])
+    B = np.array([cap.b for cap in capsules])
+    R = np.array([cap.radius for cap in capsules])
+    return A, B, R
 
 
 def quat2mat(q):
@@ -156,64 +199,54 @@ def clearance_rows(ee_pos, jac_ee, self_capsules, link_pairs, env_capsules, obje
 
     # ee point vs link
     if self_capsules:
-        A = np.array([cap["a"] for cap in self_capsules])
-        B = np.array([cap["b"] for cap in self_capsules])
-        R = np.array([cap["radius"] for cap in self_capsules])
+        A, B, R = capsule_arrays(self_capsules)
         h, C, _ = point_capsule_distance(np.broadcast_to(ee_pos, A.shape), A, B, R)
         h = h - margin
         for k in np.nonzero(h < activation)[0]:
             cap = self_capsules[k]
-            n = separating_direction(ee_pos - C[k], cap["b"] - cap["a"])
-            rows.append((h[k], n @ (jac_ee - jac_fn(cap["body_id"], C[k]))))
+            n = separating_direction(ee_pos - C[k], cap.b - cap.a)
+            rows.append((h[k], n @ (jac_ee - jac_fn(cap.body_id, C[k]))))
 
     # link vs link: both links move, so clearance rate = n . (velocity of c1 - velocity of c2)
     if link_pairs:
-        A1 = np.array([p[0]["a"] for p in link_pairs])
-        B1 = np.array([p[0]["b"] for p in link_pairs])
-        R1 = np.array([p[0]["radius"] for p in link_pairs])
-        A2 = np.array([p[1]["a"] for p in link_pairs])
-        B2 = np.array([p[1]["b"] for p in link_pairs])
-        R2 = np.array([p[1]["radius"] for p in link_pairs])
+        A1, B1, R1 = capsule_arrays([cap1 for cap1, _ in link_pairs])
+        A2, B2, R2 = capsule_arrays([cap2 for _, cap2 in link_pairs])
         h, C1, C2 = capsule_capsule_distance(A1, B1, R1, A2, B2, R2)
         h = h - margin
         for k in np.nonzero(h < activation)[0]:
             cap1, cap2 = link_pairs[k]
-            n = separating_direction(C1[k] - C2[k], cap1["b"] - cap1["a"], cap2["b"] - cap2["a"])
-            rows.append((h[k], n @ (jac_fn(cap1["body_id"], C1[k]) - jac_fn(cap2["body_id"], C2[k]))))
+            n = separating_direction(C1[k] - C2[k], cap1.b - cap1.a, cap2.b - cap2.a)
+            rows.append((h[k], n @ (jac_fn(cap1.body_id, C1[k]) - jac_fn(cap2.body_id, C2[k]))))
 
     # link vs table: only capsules whose height is actually q-dependent (guard_table)
-    table_caps = [cap for cap in env_capsules if cap["guard_table"]]
+    table_caps = [cap for cap in env_capsules if cap.guard_table]
     if table_caps:
-        A = np.array([cap["a"] for cap in table_caps])
-        B = np.array([cap["b"] for cap in table_caps])
-        R = np.array([cap["radius"] for cap in table_caps])
+        A, B, R = capsule_arrays(table_caps)
         h, t = half_space_capsule_distance(A, B, R, table_height)
         h = h - table_margin
         for k in np.nonzero(h < activation)[0]:
             cap = table_caps[k]
-            bind_pt = cap["a"] if t[k] == 0.0 else cap["b"]
-            rows.append((h[k], np.array([0.0, 0.0, 1.0]) @ jac_fn(cap["body_id"], bind_pt)))
+            bind_pt = cap.a if t[k] == 0.0 else cap.b
+            rows.append((h[k], np.array([0.0, 0.0, 1.0]) @ jac_fn(cap.body_id, bind_pt)))
 
     # link vs object: only capsules that actually move (guard_objects), one batched call per box
-    obj_caps = [cap for cap in env_capsules if cap["guard_objects"]]
+    obj_caps = [cap for cap in env_capsules if cap.guard_objects]
     if obj_caps and object_boxes:
-        A = np.array([cap["a"] for cap in obj_caps])
-        B = np.array([cap["b"] for cap in obj_caps])
-        R = np.array([cap["radius"] for cap in obj_caps])
+        A, B, R = capsule_arrays(obj_caps)
         for box in object_boxes:
-            h, t, g = capsule_box_distance(A, B, R, box["center"], box["rot"], box["half_extents"])
+            h, t, g = capsule_box_distance(A, B, R, box.center, box.rot, box.half_extents)
             h = h - margin
             for k in np.nonzero(h < activation)[0]:
                 cap = obj_caps[k]
-                bind_pt = cap["a"] if t[k] == 0.0 else cap["b"]
-                rows.append((h[k], g[k] @ jac_fn(cap["body_id"], bind_pt)))
+                bind_pt = cap.a if t[k] == 0.0 else cap.b
+                rows.append((h[k], g[k] @ jac_fn(cap.body_id, bind_pt)))
 
     return rows
 
 
 def moving_obstacle_rows(env_capsules, obstacle, jac_fn, margin, activation=np.inf, alpha=np.inf):
     """Clearance rows for every robot capsule that can move (guard_objects) against a moving
-    capsule-shaped obstacle (a, b, radius, vel -- see scene.MovingObstacle), as
+    capsule-shaped obstacle (a MovingCapsule, see scene.MovingObstacle), as
     (h, grad, h_dot_obstacle):
       h              = clearance - margin, in m
       grad           = dh/dq, shape (n_dof,)
@@ -223,29 +256,27 @@ def moving_obstacle_rows(env_capsules, obstacle, jac_fn, margin, activation=np.i
     planner plans once and can't know where a moving obstacle will be, so only the CBF uses these.
     Left out, as in clearance_rows: rows whose effective clearance h + h_dot_obstacle / alpha (what
     the CBF actually holds >= 0) is >= activation -- so an obstacle closing in fast gets its row early."""
-    caps = [cap for cap in env_capsules if cap["guard_objects"]]
+    caps = [cap for cap in env_capsules if cap.guard_objects]
     if not caps:
         return []
-    A = np.array([cap["a"] for cap in caps])
-    B = np.array([cap["b"] for cap in caps])
-    R = np.array([cap["radius"] for cap in caps])
+    A, B, R = capsule_arrays(caps)
     h, C_robot, C_obstacle = capsule_capsule_distance(
-        A, B, R, np.broadcast_to(obstacle["a"], A.shape), np.broadcast_to(obstacle["b"], A.shape),
-        np.full(len(caps), obstacle["radius"]))
+        A, B, R, np.broadcast_to(obstacle.a, A.shape), np.broadcast_to(obstacle.b, A.shape),
+        np.full(len(caps), obstacle.radius))
     h = h - margin
     rows = []
     for k, cap in enumerate(caps):
-        n = separating_direction(C_robot[k] - C_obstacle[k], cap["b"] - cap["a"], obstacle["b"] - obstacle["a"])
-        h_dot_obstacle = -n @ obstacle["vel"]
+        n = separating_direction(C_robot[k] - C_obstacle[k], cap.b - cap.a, obstacle.b - obstacle.a)
+        h_dot_obstacle = -n @ obstacle.vel
         if h[k] + h_dot_obstacle / alpha < activation:
-            rows.append((h[k], n @ jac_fn(cap["body_id"], C_robot[k]), h_dot_obstacle))
+            rows.append((h[k], n @ jac_fn(cap.body_id, C_robot[k]), h_dot_obstacle))
     return rows
 
 
 
 def capsule_set_rows(env_capsules, others, jac_fn, margin, activation=np.inf):
     """Clearance rows for every robot capsule that can move (guard_objects) against each of `others`
-    -- capsules (a, b, radius) held where they are now, e.g. another arm's links -- as (h, grad):
+    -- capsules held where they are now, e.g. another arm's links -- as (h, grad):
       h    = clearance - margin, in m
       grad = dh/dq from this arm's joints only, shape (n_dof,)
     The other side's motion is left out. When two arms each hold grad_i . u_i >= -alpha * h for the
@@ -254,28 +285,24 @@ def capsule_set_rows(env_capsules, others, jac_fn, margin, activation=np.inf):
     moves. One row per (this arm's body, other body): the closest of their capsule pairs -- a link made
     of many spheres (the iiwa's) would otherwise add a row per sphere pair, all pushing the same way.
     Left out, as in clearance_rows: rows with h >= activation."""
-    caps = [cap for cap in env_capsules if cap["guard_objects"]]
+    caps = [cap for cap in env_capsules if cap.guard_objects]
     if not caps or not others:
         return []
     I, J = (idx.ravel() for idx in np.meshgrid(np.arange(len(caps)), np.arange(len(others)), indexing="ij"))
-    A = np.array([cap["a"] for cap in caps])
-    B = np.array([cap["b"] for cap in caps])
-    R = np.array([cap["radius"] for cap in caps])
-    OA = np.array([cap["a"] for cap in others])
-    OB = np.array([cap["b"] for cap in others])
-    OR = np.array([cap["radius"] for cap in others])
+    A, B, R = capsule_arrays(caps)
+    OA, OB, OR = capsule_arrays(others)
     h, C_robot, C_other = capsule_capsule_distance(A[I], B[I], R[I], OA[J], OB[J], OR[J])
     h = h - margin
     closest = {}  # (body, other body) -> index of their closest capsule pair
     for k in np.nonzero(h < activation)[0]:
-        key = (caps[I[k]]["body_id"], others[J[k]]["body_id"])
+        key = (caps[I[k]].body_id, others[J[k]].body_id)
         if key not in closest or h[k] < h[closest[key]]:
             closest[key] = k
     rows = []
     for k in closest.values():
         cap, other = caps[I[k]], others[J[k]]
-        n = separating_direction(C_robot[k] - C_other[k], cap["b"] - cap["a"], other["b"] - other["a"])
-        rows.append((h[k], n @ jac_fn(cap["body_id"], C_robot[k])))
+        n = separating_direction(C_robot[k] - C_other[k], cap.b - cap.a, other.b - other.a)
+        rows.append((h[k], n @ jac_fn(cap.body_id, C_robot[k])))
     return rows
 
 def manipulability(J):

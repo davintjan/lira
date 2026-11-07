@@ -68,7 +68,7 @@ def main(argv=None):
         field = None
     else:
         print_plan(plan, planner, args.planner)
-        field = arm.path_field(plan["best"]["path"])
+        field = arm.path_field(plan.best.path)
         print_field(field)
 
     obstacle = MovingObstacle(arm.model, OBSTACLE_CENTER, axis=OBSTACLE_AXIS, amplitude=OBSTACLE_AMPLITUDE,
@@ -90,7 +90,7 @@ def main(argv=None):
     def draw_overlays(scn):
         """The capsules the planner and CBF see: the arm's (red) and the obstacle's (yellow)."""
         if not args.hide_collision:
-            draw_capsules(scn, arm.geometry.world(arm.data)["all"])
+            draw_capsules(scn, arm.geometry.world(arm.data).all)
             draw_capsules(scn, [obstacle_now], rgba=(0.95, 0.75, 0.1, 0.35))
 
     run_viewer(arm.model, arm.data, tick, draw_overlays, args.record)

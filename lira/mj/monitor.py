@@ -2,7 +2,7 @@
 not just luck. One arm against the obstacle, two arms against each other, both against the obstacle."""
 import numpy as np
 
-from core.geometry import capsule_capsule_distance
+from core.geometry import capsule_arrays, capsule_capsule_distance
 
 
 class ContactMonitor:
@@ -42,11 +42,7 @@ class ContactMonitor:
 def closest_distance(caps_a, caps_b):
     """The smallest distance (m) between any capsule of caps_a and any of caps_b."""
     pairs = [(cap_a, cap_b) for cap_a in caps_a for cap_b in caps_b]
-    first = [cap_a for cap_a, _ in pairs]
-    second = [cap_b for _, cap_b in pairs]
-    distances, _, _ = capsule_capsule_distance(
-        np.array([cap["a"] for cap in first]), np.array([cap["b"] for cap in first]),
-        np.array([cap["radius"] for cap in first]),
-        np.array([cap["a"] for cap in second]), np.array([cap["b"] for cap in second]),
-        np.array([cap["radius"] for cap in second]))
+    A1, B1, R1 = capsule_arrays([cap_a for cap_a, _ in pairs])
+    A2, B2, R2 = capsule_arrays([cap_b for _, cap_b in pairs])
+    distances, _, _ = capsule_capsule_distance(A1, B1, R1, A2, B2, R2)
     return distances.min()

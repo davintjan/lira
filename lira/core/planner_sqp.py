@@ -25,8 +25,8 @@ from core.planner import TrajectoryPlanner
 
 
 class SQPTrajectoryPlanner(TrajectoryPlanner):
-    """Same interface and scoring as every TrajectoryPlanner -- optimize() returns (path, path_cost
-    breakdown) -- so plan_trajectory ranks candidates from either planner the same way. Only how
+    """Same interface and scoring as every TrajectoryPlanner -- optimize() returns (path, PathCost) --
+    so plan_trajectory ranks candidates from either planner the same way. Only how
     the path is found differs. Inherits margins, weights and feasibility_eps from TrajectoryPlanner."""
 
     def __init__(self, activation=0.05, mu_init=10.0, mu_scale=10.0, max_mu_rounds=4,

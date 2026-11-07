@@ -37,18 +37,21 @@ def make_planner(kind, cbf_margin):
 
 
 def print_plan(plan, planner, kind):
-    """Every candidate's cost (gradient descent), then the winner's cost breakdown."""
-    for k, cand in enumerate(plan["all_candidates"]):
-        if "iters" in cand["breakdown"]:  # gradient descent reports its passes; SQP doesn't
-            print(f"  candidate {k}: {cand['breakdown']['iters']:2d}/{planner.iters} GD passes, "
-                  f"total cost {cand['breakdown']['total']:.4f}{'  <- best' if cand is plan['best'] else ''}")
-    cost = plan["best"]["breakdown"]
-    print(f"Path found ({kind}): goal_manip={plan['best']['goal_manip']:.4f}")
-    for term in ("smooth", "collision", "singularity"):
-        print(f"  {term:<19} {cost[term]:10.4f}")
-    print(f"  feasibility_penalty {cost['feasibility_penalty']:10.4f}"
-          f"   (intrusion_depth {cost['intrusion_depth'] * 100:.2f} cm)")
-    print(f"  total               {cost['total']:10.4f}")
+    """Every candidate's cost (gradient descent), then the winner's cost term by term."""
+    best = plan.best
+    for k, candidate in enumerate(plan.candidates):
+        if candidate.cost.iters is not None:  # gradient descent reports its passes; SQP doesn't
+            marker = "  <- best" if candidate is best else ""
+            print(f"  candidate {k}: {candidate.cost.iters:2d}/{planner.iters} GD passes, "
+                  f"total cost {candidate.cost.total:.4f}{marker}")
+    cost = best.cost
+    print(f"Path found ({kind}): goal_manip={best.goal_manip:.4f}")
+    print(f"  smooth              {cost.smooth:10.4f}")
+    print(f"  collision           {cost.collision:10.4f}")
+    print(f"  singularity         {cost.singularity:10.4f}")
+    print(f"  feasibility_penalty {cost.feasibility_penalty:10.4f}"
+          f"   (intrusion_depth {cost.intrusion_depth * 100:.2f} cm)")
+    print(f"  total               {cost.total:10.4f}")
 
 
 def print_field(field):

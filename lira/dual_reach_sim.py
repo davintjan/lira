@@ -65,7 +65,7 @@ class ReachArm(DualArm):
             print(f"  WARNING: no IK candidate converged -- {self.name} falls back to the straight-line DS")
             return None
         print_plan(plan, planner, kind)
-        self.field = arm.path_field(plan["best"]["path"])
+        self.field = arm.path_field(plan.best.path)
         print_field(self.field)
         return plan
 
@@ -93,14 +93,14 @@ def control(arms, data, obstacle=None):
     """One control update: every arm's model synced to the sim, then each arm's nominal command filtered
     against its own hazards, the other arm's links where they are now and the obstacle (its capsule this
     tick, or None), into the servos. Returns each arm's capsules in world frame (RobotGeometry.world's
-    env list), for the monitors and the overlay."""
+    env), for the monitors and the overlay."""
     for dual_arm in arms:
         dual_arm.sync(data)
     caps = [dual_arm.arm.geometry.world(dual_arm.arm.data) for dual_arm in arms]
     for dual_arm, own, other in zip(arms, caps, caps[::-1]):
-        data.ctrl[dual_arm.ctrl_idx] = dual_arm.safety.filter(dual_arm.nominal(), caps=own, others=other["env"],
+        data.ctrl[dual_arm.ctrl_idx] = dual_arm.safety.filter(dual_arm.nominal(), caps=own, others=other.env,
                                                               boxes=dual_arm.other_boxes, obstacle=obstacle)
-    return [c["env"] for c in caps]
+    return [c.env for c in caps]
 
 
 def main(argv=None):

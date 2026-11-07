@@ -5,11 +5,36 @@ import hashlib
 import itertools
 import json
 import pathlib
+from dataclasses import dataclass
 
 import mujoco
 import numpy as np
 
-from core.geometry import quat2mat, capsule_capsule_distance
+from core.geometry import Box, LinkCapsule, MovingCapsule, capsule_capsule_distance, quat2mat
+
+
+@dataclass
+class BodyCapsule:
+    """A collision capsule fixed to a body, in the body's frame: centred at local_pos, along local_rot's
+    z axis, half_length either side of the centre. guard_table, guard_objects: whether its clearance to
+    the table / to objects can change at all (RobotGeometry._sample_hazards sets them)."""
+    body_id: int
+    name: str
+    local_pos: np.ndarray
+    local_rot: np.ndarray
+    radius: float
+    half_length: float
+    guard_table: bool = True
+    guard_objects: bool = True
+
+
+@dataclass
+class ArmCapsules:
+    """An arm's capsules in world frame at one state (RobotGeometry.world), as core.geometry.LinkCapsules."""
+    all: list             # every capsule, the synthetic base included (e.g. to draw them)
+    self_collision: list  # the self-collision capsules (RobotGeometry.capsules)
+    env: list             # the real collision geoms (RobotGeometry.env_capsules), for table and object checks
+    pairs: list           # the guarded link-vs-link pairs (RobotGeometry.link_pairs), as (capsule, capsule)
 
 
 class RobotGeometry:
@@ -40,7 +65,7 @@ class RobotGeometry:
             body_id = model.geom_bodyid[gid]
             body_name = model.body(body_id).name
             radius, half_length = model.geom_size[gid][:2]
-            entry = dict(
+            entry = BodyCapsule(
                 body_id=body_id,
                 name=model.geom(gid).name or f"{body_name}_geom{gid}",
                 local_pos=model.geom_pos[gid].copy(),
@@ -55,7 +80,7 @@ class RobotGeometry:
         # its table/object clearance can never change with q.
         base_entries = []
         if base_capsule is not None:
-            base_entries.append(dict(
+            base_entries.append(BodyCapsule(
                 body_id=model.body(base_capsule["body_name"]).id, name="base_synthetic",
                 local_pos=np.asarray(base_capsule["local_pos"], dtype=float),
                 local_rot=quat2mat(np.asarray(base_capsule["local_quat"], dtype=float)),
@@ -81,15 +106,16 @@ class RobotGeometry:
         if path.exists():
             cached = json.loads(path.read_text())
             for cap, table, objects in zip(self.env_capsules, cached["guard_table"], cached["guard_objects"]):
-                cap["guard_table"], cap["guard_objects"] = table, objects
+                cap.guard_table = table
+                cap.guard_objects = objects
             return [tuple(pair) for pair in cached["link_pairs"]]
         pairs = self._sample_hazards(model, **self._HAZARD_SETTINGS)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(dict(
-            capsules=[cap["name"] for cap in self.link_capsules],  # for a human reading the file
+            capsules=[cap.name for cap in self.link_capsules],  # for a human reading the file
             link_pairs=[[int(i), int(j)] for i, j in pairs],
-            guard_table=[cap["guard_table"] for cap in self.env_capsules],
-            guard_objects=[cap["guard_objects"] for cap in self.env_capsules],
+            guard_table=[cap.guard_table for cap in self.env_capsules],
+            guard_objects=[cap.guard_objects for cap in self.env_capsules],
         ), indent=1))
         return pairs
 
@@ -102,8 +128,8 @@ class RobotGeometry:
                       model.jnt_pos, model.jnt_axis, model.jnt_range[:model.nu], model.exclude_signature):
             h.update(np.ascontiguousarray(array).tobytes())
         for cap in self.link_capsules:
-            h.update(np.array([cap["body_id"], *cap["local_pos"], *cap["local_rot"].ravel(),
-                               cap["radius"], cap["half_length"]], dtype=float).tobytes())
+            h.update(np.array([cap.body_id, *cap.local_pos, *cap.local_rot.ravel(),
+                               cap.radius, cap.half_length], dtype=float).tobytes())
         h.update(json.dumps(dict(self._HAZARD_SETTINGS, version=self._HAZARD_VERSION), sort_keys=True).encode())
         return h.hexdigest()[:12]
 
@@ -126,7 +152,7 @@ class RobotGeometry:
         excluded = {frozenset((int(sig) >> 16, int(sig) & 0xFFFF)) for sig in model.exclude_signature}
         candidates = []
         for i, j in itertools.combinations(range(len(caps)), 2):
-            bi, bj = caps[i]["body_id"], caps[j]["body_id"]
+            bi, bj = caps[i].body_id, caps[j].body_id
             if bi == bj or model.body_parentid[bi] == bj or model.body_parentid[bj] == bi:
                 continue
             if frozenset((bi, bj)) in excluded:
@@ -135,11 +161,11 @@ class RobotGeometry:
         I, J = np.array(candidates, dtype=int).reshape(-1, 2).T
 
         # every capsule at once: center = body_pos + body_rot @ local_pos, axis = body_rot @ local z
-        body = np.array([cap["body_id"] for cap in caps])
-        local_pos = np.array([cap["local_pos"] for cap in caps])
-        local_z = np.array([cap["local_rot"][:, 2] for cap in caps])
-        half = np.array([cap["half_length"] for cap in caps])[:, None]
-        radius = np.array([cap["radius"] for cap in caps])
+        body = np.array([cap.body_id for cap in caps])
+        local_pos = np.array([cap.local_pos for cap in caps])
+        local_z = np.array([cap.local_rot[:, 2] for cap in caps])
+        half = np.array([cap.half_length for cap in caps])[:, None]
+        radius = np.array([cap.radius for cap in caps])
 
         data = mujoco.MjData(model)
         lo, hi = model.jnt_range[:model.nu, 0], model.jnt_range[:model.nu, 1]
@@ -163,8 +189,8 @@ class RobotGeometry:
 
         endpoints, lowest = np.array(endpoints), np.array(lowest)
         for k, cap in enumerate(self.env_capsules):
-            cap["guard_table"] = bool(np.ptp(lowest[:, k]) > still_tol)
-            cap["guard_objects"] = bool(np.ptp(endpoints[:, k], axis=0).max() > still_tol)
+            cap.guard_table = bool(np.ptp(lowest[:, k]) > still_tol)
+            cap.guard_objects = bool(np.ptp(endpoints[:, k], axis=0).max() > still_tol)
 
         return [pair for k, pair in enumerate(candidates)
                 if h_min[k] < near and h_max[k] - h_min[k] > pair_fixed_tol]
@@ -173,31 +199,23 @@ class RobotGeometry:
     def _capsules_world(data, capsule_list):
         world = []
         for cap in capsule_list:
-            body_id = cap["body_id"]
-            body_pos = data.xpos[body_id]
-            body_rot = data.xmat[body_id].reshape(3, 3)
-            center = body_pos + body_rot @ cap["local_pos"]
-            z_axis = body_rot @ cap["local_rot"][:, 2]
-            half = cap["half_length"]
-            world.append(dict(
-                body_id=body_id, name=cap["name"],
-                a=center - half * z_axis, b=center + half * z_axis,
-                radius=cap["radius"],
-                guard_table=cap.get("guard_table", True), guard_objects=cap.get("guard_objects", True),
+            body_pos = data.xpos[cap.body_id]
+            body_rot = data.xmat[cap.body_id].reshape(3, 3)
+            center = body_pos + body_rot @ cap.local_pos
+            z_axis = body_rot @ cap.local_rot[:, 2]
+            world.append(LinkCapsule(
+                a=center - cap.half_length * z_axis, b=center + cap.half_length * z_axis, radius=cap.radius,
+                body_id=cap.body_id, name=cap.name, guard_table=cap.guard_table, guard_objects=cap.guard_objects,
             ))
         return world
 
     def world(self, data):
-        """Every capsule in world frame at data's state, moved there once:
-          all   -- every capsule, the synthetic base included (e.g. to draw them)
-          self  -- the self-collision capsules (capsules)
-          env   -- the real collision geoms (env_capsules), for table and object checks
-          pairs -- the guarded link-vs-link pairs (link_pairs), as (capsule, capsule)"""
+        """Every capsule in world frame at data's state, moved there once (see ArmCapsules)."""
         world = self._capsules_world(data, self.link_capsules)
-        return dict(all=world,
-                    self=[world[k] for k in self._self_index],
-                    env=world[:len(self.env_capsules)],  # link_capsules = env_capsules + base_entries
-                    pairs=[(world[i], world[j]) for i, j in self.link_pairs])
+        return ArmCapsules(all=world,
+                           self_collision=[world[k] for k in self._self_index],
+                           env=world[:len(self.env_capsules)],  # link_capsules = env_capsules + base_entries
+                           pairs=[(world[i], world[j]) for i, j in self.link_pairs])
 
 
 class EnvironmentGeometry:
@@ -217,10 +235,10 @@ class EnvironmentGeometry:
         for gid in range(model.ngeom):
             if model.geom_bodyid[gid] != self.object_body_id:
                 continue
-            self.object_boxes.append(dict(
+            self.object_boxes.append(Box(  # in the block's frame
                 name=model.geom(gid).name or f"{object_body_name}_geom{gid}",
-                local_pos=model.geom_pos[gid].copy(),
-                local_rot=quat2mat(model.geom_quat[gid]),
+                center=model.geom_pos[gid].copy(),
+                rot=quat2mat(model.geom_quat[gid]),
                 half_extents=model.geom_size[gid][:3].copy(),
             ))
 
@@ -230,11 +248,11 @@ class EnvironmentGeometry:
         body_rot = data.xmat[self.object_body_id].reshape(3, 3)
         world = []
         for box in self.object_boxes:
-            world.append(dict(
-                name=box["name"],
-                center=body_pos + body_rot @ box["local_pos"],
-                rot=body_rot @ box["local_rot"],
-                half_extents=box["half_extents"],
+            world.append(Box(
+                name=box.name,
+                center=body_pos + body_rot @ box.center,
+                rot=body_rot @ box.rot,
+                half_extents=box.half_extents,
             ))
         return world
 
@@ -273,8 +291,8 @@ class MovingObstacle:
             self.frozen_at = data.time
 
     def update(self, data):
-        """Moves the obstacle to where it is at data.time (or stays put once frozen); returns its
-        capsule (a, b, radius) and its velocity vel, all world frame."""
+        """Moves the obstacle to where it is at data.time (or stays put once frozen); returns it as a
+        MovingCapsule, world frame."""
         a = self.amplitude
         t = data.time if self.frozen_at is None else self.frozen_at
         if self.dwell is not None:  # from -a: cross to +a, wait, cross back to -a, wait, and so on
@@ -302,5 +320,5 @@ class MovingObstacle:
         data.mocap_pos[self.mocap_id] = pos
 
         long_axis = quat2mat(data.mocap_quat[self.mocap_id]) @ self.long_axis_local
-        return dict(a=pos - self.half_length * long_axis, b=pos + self.half_length * long_axis,
-                    radius=self.radius, vel=direction * self.speed * self.axis)
+        return MovingCapsule(a=pos - self.half_length * long_axis, b=pos + self.half_length * long_axis,
+                             radius=self.radius, vel=direction * self.speed * self.axis)

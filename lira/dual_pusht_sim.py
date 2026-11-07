@@ -104,12 +104,12 @@ def main(argv=None):
                 push_arm.dual.sync(data)
             caps = [push_arm.arm.geometry.world(push_arm.arm.data) for push_arm in arms]
             for push_arm, own, other in zip(arms, caps, caps[::-1]):
-                data.ctrl[push_arm.dual.ctrl_idx] = push_arm.control(data.time, own, obstacle_now, others=other["env"],
+                data.ctrl[push_arm.dual.ctrl_idx] = push_arm.control(data.time, own, obstacle_now, others=other.env,
                                                                      boxes=push_arm.dual.other_boxes)
-            if arm_monitor.update(data, caps[0]["env"], caps[1]["env"]):
+            if arm_monitor.update(data, caps[0].env, caps[1].env):
                 print(f"[{data.time:6.2f}s] WARNING: the arms touched")
             if obstacle_now is not None:
-                if obstacle_monitor.update(data, caps[0]["env"] + caps[1]["env"], [obstacle_now]):
+                if obstacle_monitor.update(data, caps[0].env + caps[1].env, [obstacle_now]):
                     print(f"[{data.time:6.2f}s] WARNING: the obstacle hit an arm")
                 if all(push_arm.finished for push_arm in arms):
                     obstacle.freeze(data)  # both tasks over: the obstacle stops where it is

@@ -46,7 +46,7 @@ PUSH_TIME_LIMIT = 300.0  # s of sim time in the push phase
 
 def above_block(arm):
     """RETREAT_HEIGHT above the T's top face, over its centre of mass: where the probe hovers once pushing is over."""
-    top = max(box["center"][2] + box["half_extents"][2] for box in arm.env.update(arm.data))  # the T stands upright
+    top = max(box.center[2] + box.half_extents[2] for box in arm.env.update(arm.data))  # the T stands upright
     return np.append(arm.data.body("t_block").xipos[:2], top + RETREAT_HEIGHT)
 
 
@@ -111,7 +111,8 @@ class PushTTask:
             print(f"{who}WARNING: no IK candidate converged -- descending with the Cartesian DS")
             self.phase = "descend"
             return None
-        self.field, self.path_end, self.phase = arm.path_field(plan["best"]["path"]), plan["best"]["path"][-1], "reach"
+        path = plan.best.path
+        self.field, self.path_end, self.phase = arm.path_field(path), path[-1], "reach"
         return plan
 
     def _probe_cmd(self, target, touch_block, caps, others, boxes, obstacle):

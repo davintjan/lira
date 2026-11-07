@@ -8,6 +8,7 @@ descent, planner_sqp.SQPTrajectoryPlanner by SQP. plan_trajectory ties it togeth
 """
 import multiprocessing as mp
 import os
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -16,10 +17,45 @@ from core.ik import solve_ik_candidates
 from mj.sandbox import KinematicsSandbox
 
 
+@dataclass
+class PathCost:
+    """A path's cost, term by term (TrajectoryPlanner.path_cost)."""
+    smooth: float
+    collision: float
+    singularity: float
+    feasibility_penalty: float  # large once the path goes deeper than feasibility_eps inside a margin
+    intrusion_depth: float      # m: the deepest the path goes inside any collision margin
+    iters: int | None = None    # gradient descent only: how many passes it took
+
+    @property
+    def total(self):
+        return self.smooth + self.collision + self.singularity + self.feasibility_penalty
+
+
+@dataclass
+class Candidate:
+    """One IK goal and the planner's path to it."""
+    q_goal: np.ndarray
+    path: np.ndarray
+    cost: PathCost
+    goal_manip: float  # manipulability at the goal
+
+
+@dataclass
+class Plan:
+    """plan_trajectory's result: a path to every IK goal it found."""
+    candidates: list
+
+    @property
+    def best(self):
+        """The cheapest candidate."""
+        return min(self.candidates, key=lambda candidate: candidate.cost.total)
+
+
 class TrajectoryPlanner:
     """A joint-space path's cost and score, the same for every planner, so plan_trajectory ranks
     candidates from either the same way. Subclasses implement optimize(q_start, q_goal, sandbox,
-    object_boxes, table_height) -> (path, path_cost breakdown)."""
+    object_boxes, table_height) -> (path, PathCost)."""
 
     def __init__(self, n_waypoints=12, margin=0.03, table_margin=0.005, manip_thresh=0.01, w_smooth=1.0,
                  w_collision=50.0, w_singularity=20.0, feasibility_eps=0.002, feasibility_penalty=1000.0):
@@ -46,7 +82,7 @@ class TrajectoryPlanner:
         sandbox.set_q(q)
         caps = sandbox.world_capsules()
         return clearance_rows(
-            sandbox.ee_pos(), sandbox.ee_jacobian_full()[:3], caps["self"], caps["pairs"], caps["env"],
+            sandbox.ee_pos(), sandbox.ee_jacobian_full()[:3], caps.self_collision, caps.pairs, caps.env,
             object_boxes, table_height, sandbox.point_jacobian,
             margin=self.margin, table_margin=self.table_margin, activation=activation,
         )
@@ -107,8 +143,8 @@ class TrajectoryPlanner:
         return self.w_smooth * float(np.sum(diffs ** 2))
 
     def path_cost(self, path, sandbox, object_boxes, table_height):
-        """Total path cost with a breakdown; adds a large feasibility_penalty if
-        intrusion_depth exceeds feasibility_eps (see __init__)."""
+        """The path's PathCost; with a large feasibility_penalty if intrusion_depth exceeds
+        feasibility_eps (see __init__)."""
         collision = 0.0
         singularity = 0.0
         intrusion_depth = 0.0
@@ -121,8 +157,8 @@ class TrajectoryPlanner:
         penalty = 0.0
         if intrusion_depth > self.feasibility_eps:
             penalty = self.feasibility_penalty + 1000.0 * intrusion_depth  # + term also ranks infeasible candidates among themselves
-        return dict(smooth=smooth, collision=collision, singularity=singularity, intrusion_depth=intrusion_depth,
-                    feasibility_penalty=penalty, total=smooth + collision + singularity + penalty)
+        return PathCost(smooth=smooth, collision=collision, singularity=singularity, feasibility_penalty=penalty,
+                        intrusion_depth=intrusion_depth)
 
 
 # Per-process globals, set once by _init_worker after the pool forks -- each
@@ -141,10 +177,10 @@ def _optimize_worker(args):
     """Runs optimize() for one candidate in a worker process; same steps plan_trajectory
     used to do inline in its loop, just against this process's own sandbox."""
     planner, q_start, q_goal, object_boxes, table_height = args
-    path, breakdown = planner.optimize(q_start, q_goal, _worker_sandbox, object_boxes, table_height)
+    path, cost = planner.optimize(q_start, q_goal, _worker_sandbox, object_boxes, table_height)
     _worker_sandbox.set_q(q_goal)
     goal_manip = manipulability(_worker_sandbox.ee_jacobian_full())
-    return dict(q_goal=q_goal, path=path, breakdown=breakdown, goal_manip=goal_manip)
+    return Candidate(q_goal=q_goal, path=path, cost=cost, goal_manip=goal_manip)
 
 
 def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat,
@@ -152,7 +188,7 @@ def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat
                     boxes=()):
     """Full pipeline: multi-seed IK for candidate goals, optimize a path to each with `planner` (a
     TrajectoryPlanner subclass), pick the winner by total path cost (not isolated endpoint quality).
-    Returns None if no seed converged, else {'best': ..., 'all_candidates': ...}.
+    Returns None if no seed converged, else a Plan.
 
     ik_rounds: up to this many rounds of n_random_seeds IK seeds, stopping at the first that finds a
     goal clear of collisions. One round's seeds can all land on colliding branches (e.g. every one
@@ -200,10 +236,9 @@ def plan_trajectory(model, data, geometry, env, q_start, target_pos, target_quat
     else:
         results = []
         for q_goal in candidates:
-            path, breakdown = planner.optimize(q_start, q_goal, sandbox, object_boxes, table_height)
+            path, cost = planner.optimize(q_start, q_goal, sandbox, object_boxes, table_height)
             sandbox.set_q(q_goal)
             goal_manip = manipulability(sandbox.ee_jacobian_full())
-            results.append(dict(q_goal=q_goal, path=path, breakdown=breakdown, goal_manip=goal_manip))
+            results.append(Candidate(q_goal=q_goal, path=path, cost=cost, goal_manip=goal_manip))
 
-    best = min(results, key=lambda r: r["breakdown"]["total"])
-    return dict(best=best, all_candidates=results)
+    return Plan(candidates=results)

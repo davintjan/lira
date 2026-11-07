@@ -77,7 +77,7 @@ def main(argv=None):
         park_obstacle(arm)
     else:
         obstacle = make_obstacle(arm)
-        arm_bodies = {cap["body_id"] for cap in arm.geometry.env_capsules}
+        arm_bodies = {cap.body_id for cap in arm.geometry.env_capsules}
         monitor = ContactMonitor(arm.model, arm_bodies, {arm.model.body("obstacle").id})
 
     def obstacle_note(so_far):
@@ -91,7 +91,7 @@ def main(argv=None):
         now = arm.data.time
         obstacle_now = obstacle.update(arm.data) if obstacle is not None else None
         caps = arm.geometry.world(arm.data)  # every capsule in world frame, once per tick
-        if obstacle_now is not None and monitor.update(arm.data, caps["env"], [obstacle_now]):
+        if obstacle_now is not None and monitor.update(arm.data, caps.env, [obstacle_now]):
             print(f"[{now:6.2f}s] WARNING: the obstacle hit the robot")
         arm.command(task.control(now, caps, obstacle_now))
         if task.succeeded and obstacle is not None:

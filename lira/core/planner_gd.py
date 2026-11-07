@@ -23,7 +23,7 @@ class GDTrajectoryPlanner(TrajectoryPlanner):
     def optimize(self, q_start, q_goal, sandbox, object_boxes, table_height):
         """Gradient-descends the interior waypoints of a straight-line seed (endpoints fixed), for up
         to `iters` passes -- fewer once a pass moves no joint more than `tol` (the forces have
-        balanced; more passes won't change the path). The breakdown's "iters" is how many it took."""
+        balanced; more passes won't change the path). Its PathCost's iters is how many it took."""
         q_start = np.array(q_start, dtype=float)
         q_goal = np.array(q_goal, dtype=float)
         path = np.linspace(q_start, q_goal, self.n_waypoints)
@@ -41,6 +41,6 @@ class GDTrajectoryPlanner(TrajectoryPlanner):
             if step < self.tol:
                 break
 
-        breakdown = self.path_cost(path, sandbox, object_boxes, table_height)
-        breakdown["iters"] = n_iters
-        return path, breakdown
+        cost = self.path_cost(path, sandbox, object_boxes, table_height)
+        cost.iters = n_iters
+        return path, cost

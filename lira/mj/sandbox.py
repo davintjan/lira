@@ -37,5 +37,5 @@ class KinematicsSandbox:
         return _mj_point_jacobian(self.model, self.data, body_id, point)
 
     def world_capsules(self):
-        """The arm's capsules in world frame: RobotGeometry.world's dict."""
+        """The arm's capsules in world frame (RobotGeometry.world's ArmCapsules)."""
         return self.geometry.world(self.data)
