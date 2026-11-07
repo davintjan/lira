@@ -91,7 +91,7 @@ def main(argv=None):
         """The capsules the planner and CBF see: the arm's (red) and the obstacle's (yellow)."""
         if not args.hide_collision:
             draw_capsules(scn, arm.geometry.world(arm.data).all)
-            draw_capsules(scn, [obstacle_now], rgba=(0.95, 0.75, 0.1, 0.35))
+            draw_capsules(scn, obstacle_now, rgba=(0.95, 0.75, 0.1, 0.35))
 
     run_viewer(arm.model, arm.data, tick, draw_overlays, args.record)
 

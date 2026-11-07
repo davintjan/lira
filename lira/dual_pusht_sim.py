@@ -29,6 +29,7 @@ import numpy as np
 import torch
 
 from common import add_common_args, make_planner, resolve_seed, run_viewer
+from core.geometry import concatenate
 from mj.dual import CONTROL_EVERY, DualArm, make_monitors, make_obstacle
 from mj.model import Pusher, load_dual_model
 from mj.safety import CBFConfig
@@ -109,7 +110,7 @@ def main(argv=None):
             if arm_monitor.update(data, caps[0].env, caps[1].env):
                 print(f"[{data.time:6.2f}s] WARNING: the arms touched")
             if obstacle_now is not None:
-                if obstacle_monitor.update(data, caps[0].env + caps[1].env, [obstacle_now]):
+                if obstacle_monitor.update(data, concatenate([caps[0].env, caps[1].env]), obstacle_now):
                     print(f"[{data.time:6.2f}s] WARNING: the obstacle hit an arm")
                 if all(push_arm.finished for push_arm in arms):
                     obstacle.freeze(data)  # both tasks over: the obstacle stops where it is

@@ -4,7 +4,7 @@ runs the CBF-QP on them."""
 from dataclasses import dataclass, replace
 
 from core.cbf import cbf_qp
-from core.geometry import capsule_set_rows, clearance_rows, moving_obstacle_rows
+from core.geometry import box_rows, capsule_set_rows, clearance_rows, moving_obstacle_rows
 from mj.mj_interface import point_jacobian, site_jacobian
 
 
@@ -40,26 +40,29 @@ class SafetyFilter:
         touch_block: let the rod touch the T, but only as much as u_des asks for (that's the pushing, see
           _task_contact_rows); every other link stays fully guarded."""
         arm, cfg = self.arm, self.cfg
-        caps = caps or arm.geometry.world(arm.data)
+        if caps is None:
+            caps = arm.geometry.world(arm.data)
         object_boxes = arm.env.update(arm.data)
-        env_capsules = caps.env
+        env = caps.env
+        is_rod = env.name == "pusher"
+        guarded = caps
         if touch_block:  # the rod's rows against the T come from _task_contact_rows instead
-            env_capsules = [replace(cap, guard_objects=False) if cap.name == "pusher" else cap for cap in env_capsules]
+            guarded = replace(caps, env=replace(env, guard_objects=env.guard_objects & ~is_rod))
         rows = clearance_rows(
-            arm.flange_pose()[0], site_jacobian(arm.model, arm.data)[:3], caps.self_collision, caps.pairs,
-            env_capsules, object_boxes + list(boxes), arm.env.table_height, self._jacobian,
-            margin=cfg.margin, table_margin=cfg.table_margin, activation=cfg.activation,
+            arm.flange_pose()[0], site_jacobian(arm.model, arm.data)[:3], guarded, object_boxes + list(boxes),
+            arm.env.table_height, self._jacobian, margin=cfg.margin, table_margin=cfg.table_margin,
+            activation=cfg.activation,
         )
         if touch_block:
-            rows += self._task_contact_rows(caps.env, object_boxes, u_des)
-            rows += self._rod_rows(caps.env, boxes)  # the rod pushes its own T only
+            rows += self._task_contact_rows(env[is_rod], object_boxes, u_des)
+            rows += self._rod_rows(env[is_rod], boxes)  # the rod pushes its own T only
         if obstacle is not None:
-            rows += self._obstacle_rows(caps.env, obstacle)
-        if others:
-            rows += capsule_set_rows(caps.env, others, self._jacobian, margin=cfg.margin, activation=cfg.activation)
+            rows += self._obstacle_rows(env, obstacle)
+        if others is not None:
+            rows += capsule_set_rows(env, others, self._jacobian, margin=cfg.margin, activation=cfg.activation)
         return cbf_qp(u_des, rows, alpha=cfg.alpha, u_max=cfg.joint_vel_max, metric=metric)
 
-    def _task_contact_rows(self, env_capsules, object_boxes, u_des):
+    def _task_contact_rows(self, rod, object_boxes, u_des):
         """The rod against the T, when the task means to push it: the filter may not bring the rod
         closer to the T than u_des itself would. Each row asks
             grad . u >= min(grad . u_des, -alpha * h)
@@ -67,16 +70,11 @@ class SafetyFilter:
         (the task's approach is always allowed), but dodging something else can only move the rod
         along or away from the T, never into it. As cbf_qp's grad . u >= -alpha * h', that's
         h' = max(h, -grad . u_des / alpha)."""
-        return [(max(h, -(grad @ u_des) / self.cfg.alpha), grad) for h, grad in self._rod_rows(env_capsules, object_boxes)]
+        return [(max(h, -(grad @ u_des) / self.cfg.alpha), grad) for h, grad in self._rod_rows(rod, object_boxes)]
 
-    def _rod_rows(self, env_capsules, boxes):
+    def _rod_rows(self, rod, boxes):
         """The plain clearance rows of the rod against boxes."""
-        cfg = self.cfg
-        rod = [replace(cap, guard_table=False) for cap in env_capsules if cap.name == "pusher"]  # table: already guarded
-        return clearance_rows(
-            None, None, [], [], rod, boxes, self.arm.env.table_height, self._jacobian,
-            margin=cfg.margin, table_margin=cfg.table_margin, activation=cfg.activation,
-        )
+        return box_rows(rod, boxes, self._jacobian, margin=self.cfg.margin, activation=self.cfg.activation)
 
     def _obstacle_rows(self, env_capsules, obstacle):
         """Rows keeping every robot capsule clear of the moving obstacle. Its own motion changes the

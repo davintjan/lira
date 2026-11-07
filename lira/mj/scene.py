@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from core.geometry import Box, LinkCapsule, MovingCapsule, capsule_capsule_distance, quat2mat
+from core.geometry import ArmCapsules, Box, LinkCapsules, MovingCapsules, capsule_capsule_distance, quat2mat
 
 
 @dataclass
@@ -26,15 +26,6 @@ class BodyCapsule:
     half_length: float
     guard_table: bool = True
     guard_objects: bool = True
-
-
-@dataclass
-class ArmCapsules:
-    """An arm's capsules in world frame at one state (RobotGeometry.world), as core.geometry.LinkCapsules."""
-    all: list             # every capsule, the synthetic base included (e.g. to draw them)
-    self_collision: list  # the self-collision capsules (RobotGeometry.capsules)
-    env: list             # the real collision geoms (RobotGeometry.env_capsules), for table and object checks
-    pairs: list           # the guarded link-vs-link pairs (RobotGeometry.link_pairs), as (capsule, capsule)
 
 
 class RobotGeometry:
@@ -91,8 +82,21 @@ class RobotGeometry:
         # link_capsules: every capsule incl. base_synthetic; link_pairs index into it.
         self.link_capsules = self.env_capsules + base_entries
         index = {id(cap): k for k, cap in enumerate(self.link_capsules)}
-        self._self_index = [index[id(cap)] for cap in self.capsules]  # where world() finds each of capsules
-        self.link_pairs = self._cached_hazards(model, cache_dir, cache_name)
+        self._self_index = np.array([index[id(cap)] for cap in self.capsules])  # where world() finds them
+
+        # the same capsules as arrays, so _endpoints moves them all to world frame in one step
+        self._body_id = np.array([cap.body_id for cap in self.link_capsules])
+        self._local_pos = np.array([cap.local_pos for cap in self.link_capsules])
+        self._local_z = np.array([cap.local_rot[:, 2] for cap in self.link_capsules])
+        self._half_length = np.array([cap.half_length for cap in self.link_capsules])
+        self._radius = np.array([cap.radius for cap in self.link_capsules])
+        self._name = np.array([cap.name for cap in self.link_capsules])
+
+        self.link_pairs = self._cached_hazards(model, cache_dir, cache_name)  # also sets the guard flags
+        self._guard_table = np.array([cap.guard_table for cap in self.link_capsules])
+        self._guard_objects = np.array([cap.guard_objects for cap in self.link_capsules])
+        self._pair_first = np.array([i for i, _ in self.link_pairs], dtype=int)
+        self._pair_second = np.array([j for _, j in self.link_pairs], dtype=int)
 
     _HAZARD_SETTINGS = dict(n_samples=2000, near=0.10, pair_fixed_tol=0.03, still_tol=1e-3, seed=0)
     _HAZARD_VERSION = 2  # bump whenever _sample_hazards' logic changes, so old cache files stop matching
@@ -159,13 +163,7 @@ class RobotGeometry:
                 continue
             candidates.append((i, j))
         I, J = np.array(candidates, dtype=int).reshape(-1, 2).T
-
-        # every capsule at once: center = body_pos + body_rot @ local_pos, axis = body_rot @ local z
-        body = np.array([cap.body_id for cap in caps])
-        local_pos = np.array([cap.local_pos for cap in caps])
-        local_z = np.array([cap.local_rot[:, 2] for cap in caps])
-        half = np.array([cap.half_length for cap in caps])[:, None]
-        radius = np.array([cap.radius for cap in caps])
+        radius = self._radius
 
         data = mujoco.MjData(model)
         lo, hi = model.jnt_range[:model.nu, 0], model.jnt_range[:model.nu, 1]
@@ -177,10 +175,7 @@ class RobotGeometry:
         for _ in range(n_samples):
             data.qpos[:model.nu] = rng.uniform(lo, hi)
             mujoco.mj_kinematics(model, data)
-            rot = data.xmat[body].reshape(-1, 3, 3)
-            center = data.xpos[body] + np.einsum("nij,nj->ni", rot, local_pos)
-            axis = np.einsum("nij,nj->ni", rot, local_z)
-            A, B = center - half * axis, center + half * axis
+            A, B = self._endpoints(data)
             h, _, _ = capsule_capsule_distance(A[I], B[I], radius[I], A[J], B[J], radius[J])
             np.minimum(h_min, h, out=h_min)
             np.maximum(h_max, h, out=h_max)
@@ -195,27 +190,24 @@ class RobotGeometry:
         return [pair for k, pair in enumerate(candidates)
                 if h_min[k] < near and h_max[k] - h_min[k] > pair_fixed_tol]
 
-    @staticmethod
-    def _capsules_world(data, capsule_list):
-        world = []
-        for cap in capsule_list:
-            body_pos = data.xpos[cap.body_id]
-            body_rot = data.xmat[cap.body_id].reshape(3, 3)
-            center = body_pos + body_rot @ cap.local_pos
-            z_axis = body_rot @ cap.local_rot[:, 2]
-            world.append(LinkCapsule(
-                a=center - cap.half_length * z_axis, b=center + cap.half_length * z_axis, radius=cap.radius,
-                body_id=cap.body_id, name=cap.name, guard_table=cap.guard_table, guard_objects=cap.guard_objects,
-            ))
-        return world
+    def _endpoints(self, data):
+        """Every capsule's endpoints a, b (N,3) in world frame at data's state: the centre is
+        body_pos + body_rot @ local_pos, the axis body_rot @ local z, half_length either side."""
+        rot = data.xmat[self._body_id].reshape(-1, 3, 3)
+        center = data.xpos[self._body_id] + np.einsum("nij,nj->ni", rot, self._local_pos)
+        axis = np.einsum("nij,nj->ni", rot, self._local_z)
+        half = self._half_length[:, None]
+        return center - half * axis, center + half * axis
 
     def world(self, data):
-        """Every capsule in world frame at data's state, moved there once (see ArmCapsules)."""
-        world = self._capsules_world(data, self.link_capsules)
-        return ArmCapsules(all=world,
-                           self_collision=[world[k] for k in self._self_index],
-                           env=world[:len(self.env_capsules)],  # link_capsules = env_capsules + base_entries
-                           pairs=[(world[i], world[j]) for i, j in self.link_pairs])
+        """Every capsule in world frame at data's state (see core.geometry.ArmCapsules)."""
+        a, b = self._endpoints(data)
+        everything = LinkCapsules(a=a, b=b, radius=self._radius, body_id=self._body_id, name=self._name,
+                                  guard_table=self._guard_table, guard_objects=self._guard_objects)
+        return ArmCapsules(all=everything,
+                           self_collision=everything[self._self_index],
+                           env=everything[:len(self.env_capsules)],  # link_capsules = env_capsules + base_entries
+                           pairs=(everything[self._pair_first], everything[self._pair_second]))
 
 
 class EnvironmentGeometry:
@@ -292,7 +284,7 @@ class MovingObstacle:
 
     def update(self, data):
         """Moves the obstacle to where it is at data.time (or stays put once frozen); returns it as a
-        MovingCapsule, world frame."""
+        MovingCapsules of one, world frame."""
         a = self.amplitude
         t = data.time if self.frozen_at is None else self.frozen_at
         if self.dwell is not None:  # from -a: cross to +a, wait, cross back to -a, wait, and so on
@@ -320,5 +312,7 @@ class MovingObstacle:
         data.mocap_pos[self.mocap_id] = pos
 
         long_axis = quat2mat(data.mocap_quat[self.mocap_id]) @ self.long_axis_local
-        return MovingCapsule(a=pos - self.half_length * long_axis, b=pos + self.half_length * long_axis,
-                             radius=self.radius, vel=direction * self.speed * self.axis)
+        return MovingCapsules(a=np.array([pos - self.half_length * long_axis]),
+                              b=np.array([pos + self.half_length * long_axis]),
+                              radius=np.array([self.radius]),
+                              vel=np.array([direction * self.speed * self.axis]))

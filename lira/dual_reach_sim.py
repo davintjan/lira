@@ -27,6 +27,7 @@ import mujoco
 import numpy as np
 
 from common import add_common_args, make_planner, print_field, print_plan, resolve_seed, run_viewer
+from core.geometry import concatenate
 from core.planner import plan_trajectory
 from mj.dual import CONTROL_EVERY, DualArm, make_monitors, make_obstacle
 from mj.model import load_dual_model
@@ -140,7 +141,7 @@ def main(argv=None):
         if step % CONTROL_EVERY == 0:
             world_caps = control(arms, data, obstacle_now)
             arm_monitor.update(data, *world_caps)
-            if obstacle_now is not None and obstacle_monitor.update(data, world_caps[0] + world_caps[1], [obstacle_now]):
+            if obstacle_now is not None and obstacle_monitor.update(data, concatenate(world_caps), obstacle_now):
                 print(f"[{data.time:6.2f}s] WARNING: the obstacle hit an arm")
         if data.time >= next_report:
             next_report += REPORT_EVERY
@@ -156,7 +157,7 @@ def main(argv=None):
             for caps, color in zip(world_caps, CAPSULE_COLORS):
                 draw_capsules(scn, caps, rgba=color)
             if obstacle_now is not None:
-                draw_capsules(scn, [obstacle_now], rgba=(0.95, 0.75, 0.1, 0.35))
+                draw_capsules(scn, obstacle_now, rgba=(0.95, 0.75, 0.1, 0.35))
 
     run_viewer(model, data, tick, draw_overlays, args.record)
     print(f"Arms: {arm_monitor.summary()}" + ("" if obstacle is None else f" | obstacle: {obstacle_monitor.summary()}"))

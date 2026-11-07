@@ -2,7 +2,7 @@
 not just luck. One arm against the obstacle, two arms against each other, both against the obstacle."""
 import numpy as np
 
-from core.geometry import capsule_arrays, capsule_capsule_distance
+from core.geometry import every_pair
 
 
 class ContactMonitor:
@@ -19,8 +19,8 @@ class ContactMonitor:
         self.contact_ticks = 0
 
     def update(self, data, caps_a, caps_b):
-        """Records this tick: how close the world-frame capsules caps_a and caps_b are, and whether the
-        two sides touch. Returns True on the first tick they do."""
+        """Records this tick: how close the world-frame capsule sets caps_a and caps_b are, and whether
+        the two sides touch. Returns True on the first tick they do."""
         self.clearance = closest_distance(caps_a, caps_b)
         self.min_clearance = min(self.min_clearance, self.clearance)
         touching = any(self._between_sides(contact) for contact in data.contact[:data.ncon])
@@ -41,8 +41,5 @@ class ContactMonitor:
 
 def closest_distance(caps_a, caps_b):
     """The smallest distance (m) between any capsule of caps_a and any of caps_b."""
-    pairs = [(cap_a, cap_b) for cap_a in caps_a for cap_b in caps_b]
-    A1, B1, R1 = capsule_arrays([cap_a for cap_a, _ in pairs])
-    A2, B2, R2 = capsule_arrays([cap_b for _, cap_b in pairs])
-    distances, _, _ = capsule_capsule_distance(A1, B1, R1, A2, B2, R2)
+    _, _, distances, _, _ = every_pair(caps_a, caps_b)
     return distances.min()

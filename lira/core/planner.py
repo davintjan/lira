@@ -80,11 +80,9 @@ class TrajectoryPlanner:
         geometry.clearance_rows. The default 0 keeps only the violated ones: the cost and the intrusion
         check need nothing else."""
         sandbox.set_q(q)
-        caps = sandbox.world_capsules()
         return clearance_rows(
-            sandbox.ee_pos(), sandbox.ee_jacobian_full()[:3], caps.self_collision, caps.pairs, caps.env,
-            object_boxes, table_height, sandbox.point_jacobian,
-            margin=self.margin, table_margin=self.table_margin, activation=activation,
+            sandbox.ee_pos(), sandbox.ee_jacobian_full()[:3], sandbox.world_capsules(), object_boxes, table_height,
+            sandbox.point_jacobian, margin=self.margin, table_margin=self.table_margin, activation=activation,
         )
 
     @staticmethod

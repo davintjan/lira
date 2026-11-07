@@ -14,18 +14,17 @@ def draw_sphere(scn, pos, radius, rgba):
 
 
 def draw_capsules(scn, world_capsules, rgba=(1.0, 0.15, 0.15, 0.35)):
-    """World-frame capsules (core.geometry.Capsule: RobotGeometry.world's, MovingObstacle.update's):
+    """World-frame capsules (a core.geometry.Capsules set: RobotGeometry.world's, MovingObstacle.update's):
     the keep-out shapes cbf_qp guards. A capsule with a == b is a sphere (e.g. the iiwa's collision
     geoms) and is drawn as one."""
-    for cap in world_capsules:
-        a, b = np.asarray(cap.a, dtype=float), np.asarray(cap.b, dtype=float)
+    for a, b, radius in zip(world_capsules.a, world_capsules.b, world_capsules.radius):
         if np.linalg.norm(b - a) < 1e-9:
-            draw_sphere(scn, a, cap.radius, rgba)
+            draw_sphere(scn, a, radius, rgba)
             continue
         if scn.ngeom >= scn.maxgeom:
             return
         geom = scn.geoms[scn.ngeom]
         mujoco.mjv_initGeom(geom, type=mujoco.mjtGeom.mjGEOM_CAPSULE, size=np.zeros(3),
                             pos=np.zeros(3), mat=np.eye(3).flatten(), rgba=np.array(rgba, dtype=np.float32))
-        mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_CAPSULE, cap.radius, a, b)
+        mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_CAPSULE, radius, a, b)
         scn.ngeom += 1
